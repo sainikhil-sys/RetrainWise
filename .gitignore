@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.log
+*.db-wal
+*.db-shm
+*.tmp
+candidate_*.joblib
+data_airlines.csv.gz
+data_covertype.csv.gz
+data_electricity.csv.gz
+RetrainWise_submission.zip

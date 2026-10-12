@@ -1,0 +1,57 @@
+{
+  "title": "Electricity (Elec2, elecNormNew)",
+  "openml_id": 151,
+  "page": "https://www.openml.org/d/151",
+  "metadata_url": "https://www.openml.org/api/v1/json/data/151",
+  "expected_target": "class",
+  "drop_features": [
+    "date"
+  ],
+  "order": "Chronological. Rows are 30-minute observations of the Australian New South Wales electricity market (May 1996 - Dec 1998) in source order.",
+  "drop_reason": "'date' is a monotonically increasing normalised timestamp. It is kept in the cache but excluded from model features so the deployed model cannot key on stream position and so PSI is not trivially triggered by time.",
+  "citation": "Harries, M. (1999). SPLICE-2 comparative evaluation: Electricity pricing. Tech. report, UNSW. Normalised version distributed via MOA/OpenML.",
+  "download_url": "https://openml.org/data/v1/download/2419/electricity.arff",
+  "openml_name": "electricity",
+  "openml_version": "1",
+  "licence": "Public",
+  "openml_md5_checksum": "8ca97867d960ae029ae3a9ac2c923d34",
+  "file_format": "ARFF",
+  "dataset": "electricity",
+  "retrieved_utc": "2026-10-12T12:21:34+00:00",
+  "raw_sha256": "2d86fbc74c69a5c04bcde0119bce280dd6d8efa0115987edc75b77ccf024d7f2",
+  "raw_bytes": 3092013,
+  "cache_file": "data_electricity.csv.gz",
+  "cache_sha256": "d6a50fceccd308c1766a7efc1ecc373e8cce5f65fa3641644968fcb365860b66",
+  "target_column": "class",
+  "rows": 45312,
+  "columns": [
+    "date",
+    "day",
+    "period",
+    "nswprice",
+    "nswdemand",
+    "vicprice",
+    "vicdemand",
+    "transfer",
+    "target"
+  ],
+  "dtypes": {
+    "date": "float64",
+    "day": "object",
+    "period": "float64",
+    "nswprice": "float64",
+    "nswdemand": "float64",
+    "vicprice": "float64",
+    "vicdemand": "float64",
+    "transfer": "float64",
+    "target": "object"
+  },
+  "class_counts": {
+    "DOWN": 26075,
+    "UP": 19237
+  },
+  "missing_values": 0,
+  "preprocessing": "Cached as-is in source order with the target renamed to 'target' and labels stored as text. Imputation, scaling and one-hot encoding are fitted only on each model's own training window (see preprocessing.py).",
+  "usage_note": "Research/educational use; re-check the licence on the source page before redistribution.",
+  "regenerate": "python datasets.py electricity"
+}
