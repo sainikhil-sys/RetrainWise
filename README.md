@@ -23,7 +23,7 @@ Double-click `start_windows.bat`. It creates a virtual environment in `%LOCALAPP
 streamlit run app.py
 ```
 
-Open <http://localhost:8501>. On **Overview**, click **Start offline demo (synthetic drift stream)**.
+Open <http://localhost:8501>. On **Overview**, click **Start the offline demo**, then follow the **Next step** box on each page.
 No network connection is needed for the demo.
 
 ## Manual installation (any OS, Python 3.10–3.12)
@@ -107,7 +107,8 @@ labelled deterministic explanation mode is used.
 
 | File | Role |
 |---|---|
-| `app.py` | Streamlit UI (the only application framework) |
+| `app.py` | Streamlit UI (the only application framework): pages, navigation, workflow |
+| `ui.py` | Presentation helpers: theme-safe styling, step tracker, plain-language text, glossary, activity feed |
 | `config.py` | Validated settings, sample sizes, safe file names |
 | `database.py` | SQLite schema, transactions, audit events, JSON-lines log |
 | `datasets.py` | Downloads, caching, provenance, synthetic drift stream |

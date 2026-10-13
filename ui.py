@@ -99,11 +99,11 @@ def relative_time(iso: str | None) -> str:
 
 
 def page_header(title: str, purpose: str, how: str | None = None) -> None:
-    left, right = st.columns([5, 1])
+    left, right = st.columns([4, 1.1], vertical_alignment="bottom")
     left.markdown(f"# {title}")
     left.markdown(f'<p class="rw-purpose">{esc(purpose)}</p>', unsafe_allow_html=True)
     if how:
-        with right.popover("How to read this", use_container_width=True):
+        with right.popover("ℹ️ How it works", use_container_width=True):
             st.markdown(md(how))
 
 
@@ -212,7 +212,7 @@ EVENT_TEXT = {
     "decision_failed": ("⚠️", lambda p: f"Execution failed: {p.get('outcome')}"),
     "rollback": ("↩️", lambda p: f"Rolled back from v{p.get('from_version', 0):03d} to v{p.get('to_version', 0):03d}"),
     "post_update_outcome": ("🔍", lambda p: f"Measured real gain of an update: {100 * (p.get('realized_reduction') or 0):+.1f} pts error"),
-    "settings_saved": ("⚙️", lambda p: f"Settings changed ({len(p.get('changed', {}))} values)"),
+    "settings_saved": ("⚙️", lambda p: f"Settings changed: {', '.join(list(p.get('changed', {}))[:4]) or 'no values'}"),
     "agent_report": ("🤖", lambda p: f"Assistant report #{p.get('report')} ({p.get('mode')}, {p.get('status')})"),
     "execution_request_prepared": ("📝", lambda p: f"Assistant prepared a **{p.get('action')}** request (awaiting approval)"),
     "job_submitted": ("🧪", lambda p: f"Benchmark job {p.get('job')} submitted"),
