@@ -84,10 +84,19 @@ CREATE INDEX IF NOT EXISTS cost_records_run ON cost_records(run_id, id);
 CREATE TABLE IF NOT EXISTS events(
     id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, kind TEXT NOT NULL,
     run_id TEXT, actor TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS events_immutable_update BEFORE UPDATE ON events
+BEGIN SELECT RAISE(ABORT, 'audit events are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS events_immutable_delete BEFORE DELETE ON events
+BEGIN SELECT RAISE(ABORT, 'audit events are immutable'); END;
+CREATE TABLE IF NOT EXISTS job_logs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, created TEXT NOT NULL,
+    level TEXT NOT NULL, message TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id, id);
 """
 
 TABLES = ("settings", "runs", "batches", "predictions", "models", "decisions", "approvals",
-          "execution_requests", "agent_reports", "agent_tool_calls", "jobs", "events", "probes", "cost_records")
+          "execution_requests", "agent_reports", "agent_tool_calls", "jobs", "events", "probes", "cost_records",
+          "job_logs")
 
 
 def now() -> str:

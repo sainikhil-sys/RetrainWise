@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   partial_recovery_prior: 0.5,
   full_recovery_prior: 0.9,
   recovery_prior_weight: 2.0,
+  benefit_basis: "probe",
   regime: "balanced",
   cost_trace_kind: "diurnal",
   cost_trace_custom: [1.0],

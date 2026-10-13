@@ -2,7 +2,6 @@ import { z } from "zod";
 
 import { body, ident, route } from "@/lib/api";
 import { REGIMES } from "@/lib/catalog";
-import { engineCall } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -12,13 +11,16 @@ const WhatIf = z.object({
   regime: z.enum(REGIMES),
 });
 
-/** Re-rank stored evidence under different assumptions. Informational: nothing is saved. */
-export const POST = route<{ id: string }>(async (req, { id }) => {
-  const decisionId = ident.parse(id);
-  const b = await body(req, WhatIf);
-  return engineCall(
-    "what_if",
-    { decision_id: decisionId, error_value_multiplier: b.errorValueMultiplier, horizon_multiplier: b.horizonMultiplier, regime: b.regime },
-    { timeoutMs: 60_000 },
-  );
-});
+/** Re-rank stored evidence under other assumptions. Read-only. */
+export const POST = route<{ id: string }>(
+  async (req, { id }, ctx) => {
+    const decisionId = ident.parse(id);
+    const b = await body(req, WhatIf);
+    return ctx.engine.call(
+      "what_if",
+      { decision_id: decisionId, error_value_multiplier: b.errorValueMultiplier, horizon_multiplier: b.horizonMultiplier, regime: b.regime },
+      { timeoutMs: 60_000 },
+    );
+  },
+  { limit: { max: 240, windowMs: 60_000 } },
+);

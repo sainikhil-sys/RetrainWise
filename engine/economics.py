@@ -156,7 +156,7 @@ def rank_actions(evidence: dict, context: dict, settings, prices: dict | None = 
     multiplier = _finite("price_multiplier", context.get("price_multiplier", 1.0), 0)
     factor = _finite("realization factor", context.get("realization", {}).get("factor", settings.realization_prior), 0)
     avoidable = context.get("avoidable") or {}
-    use_avoidable = bool(avoidable.get("available"))
+    use_avoidable = bool(avoidable.get("available")) and getattr(settings, "benefit_basis", "probe") == "probe"
     recovery = context.get("recovery") or {}
     renewal = context.get("renewal") or {}
     rows = []
@@ -222,13 +222,14 @@ def rank_actions(evidence: dict, context: dict, settings, prices: dict | None = 
             hi = (ev.get("reduction_ci") or [0.0, 0.0])[1]
             guards.append({"name": "hold-out does not contradict the probe", "passed": hi > 0,
                            "detail": f"candidate hold-out reduction 95% upper bound {hi:+.3f} (must be > 0)"})
-        if renewal.get("available"):
+        if renewal.get("available") and use_avoidable:
             guards.append({"name": "renewal rule (marginal >= average)", "passed": bool(renewal.get("due")),
                            "detail": f"avoidable cost ${renewal['marginal']:.4f}/prediction vs running cycle "
                                      f"average ${renewal['average']:.4f}/prediction"})
         else:
             guards.append({"name": "renewal rule (marginal >= average)", "passed": True,
-                           "detail": "no probe evidence for this model version yet; rule not applied"})
+                           "detail": "not applied (hold-out basis selected)" if renewal.get("available")
+                           else "no probe evidence for this model version yet; rule not applied"})
         rows.append({"action": action, "label": ACTION_LABELS[action], "costs": costs, "total_cost": total,
                      "expected_reduction": exp_red, "benefit": benefit, "benefit_ci": ci,
                      "net_value": net, "prob_positive": prob, "basis": basis, "recovery_ratio": ratio,

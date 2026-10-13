@@ -1,12 +1,14 @@
 import { z } from "zod";
 
 import { body, route } from "@/lib/api";
-import { engineCall } from "@/lib/engine";
+import { AuthError } from "@/lib/authz";
+import { audit } from "@/lib/audit";
+import { can, OPERATOR_SETTINGS } from "@/lib/permissions";
 import { getSettings } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async () => ({ settings: await getSettings() }));
+export const GET = route(async (_req, _p, ctx) => ({ settings: await getSettings(ctx.workspace.id) }));
 
 const num = z.number().finite();
 const SettingsBody = z.object({
@@ -45,6 +47,7 @@ const SettingsBody = z.object({
       partial_recovery_prior: num.min(0).max(1.5),
       full_recovery_prior: num.min(0).max(1.5),
       recovery_prior_weight: num.min(0),
+      benefit_basis: z.enum(["probe", "holdout"]),
       regime: z.enum(["cheap", "balanced", "expensive"]),
       cost_trace_kind: z.enum(["flat", "diurnal", "spot", "custom"]),
       cost_trace_custom: z.array(num.positive()).min(1).max(1000),
@@ -73,8 +76,23 @@ const SettingsBody = z.object({
     .strict(),
 });
 
-/** Save validated settings. Pending decisions become stale (their assumptions changed). */
-export const PUT = route(async (req) => {
-  const b = await body(req, SettingsBody);
-  return engineCall("save_settings", { settings: b.settings }, { timeoutMs: 60_000, dedupeKey: "settings" });
-});
+/**
+ * Save validated settings. Operators may change stream settings (batch size,
+ * label delay and availability, seed, initial window); everything else
+ * (costs, budgets, guardrails, autonomy, agent) needs an admin.
+ */
+export const PUT = route(
+  async (req, _p, ctx) => {
+    const b = await body(req, SettingsBody);
+    const current = (await getSettings(ctx.workspace.id)) as Record<string, unknown>;
+    const changed = Object.keys(b.settings).filter((k) => JSON.stringify((b.settings as Record<string, unknown>)[k]) !== JSON.stringify(current[k]));
+    const adminOnly = changed.filter((k) => !OPERATOR_SETTINGS.has(k));
+    if (adminOnly.length && !can(ctx.role, "settings.engine")) {
+      throw new AuthError(403, `Only admins can change: ${adminOnly.join(", ")}.`);
+    }
+    const r = await ctx.engine.call("save_settings", { settings: b.settings, actor: ctx.user.email }, { timeoutMs: 60_000, dedupeKey: "settings" });
+    await audit({ kind: "engine_settings_changed", actorEmail: ctx.user.email, actorId: ctx.user.id, workspaceId: ctx.workspace.id, detail: { changed } });
+    return r;
+  },
+  { permission: "stream.configure" },
+);

@@ -27,7 +27,7 @@ engine/retrainwise.db
 engine/model_v*.joblib
 engine/workspaces/
 engine/scratch_*
-data/
+/data/
 .env
 .env.local
 .claude/worktrees/

@@ -3,7 +3,10 @@ import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import { EngineError } from "./engine";
+import { AuthError, requireApi, type Ctx } from "./authz";
+import { EngineError, wsEngine, type WsEngine } from "./engine";
+import type { Permission } from "./permissions";
+import { rateLimit } from "./rate-limit";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
@@ -16,19 +19,22 @@ function hostname(value: string | null): string | null {
   }
 }
 
+function allowedHost(host: string | null) {
+  if (!host) return false;
+  if (LOCAL_HOSTS.has(host)) return true;
+  const extra = (process.env.RETRAINWISE_ALLOWED_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean);
+  const authHost = hostname(process.env.AUTH_URL || null);
+  return extra.includes(host) || host === authHost;
+}
+
 /**
- * Local-only API protection.
- * - Host must be a loopback name (blocks LAN access and DNS rebinding) unless
- *   RETRAINWISE_ALLOW_REMOTE=1 is set explicitly.
- * - State-changing requests must be JSON (forces a CORS preflight from other
- *   origins) and, when an Origin header is present, come from the same host.
+ * Request protection applied before authentication:
+ * - Host must be localhost or an explicitly configured host (blocks DNS rebinding).
+ * - State-changing requests must be JSON and same-origin (CSRF protection).
  */
 function guard(req: NextRequest): NextResponse | null {
-  if (process.env.RETRAINWISE_ALLOW_REMOTE !== "1") {
-    const host = hostname(req.headers.get("host"));
-    if (!host || !LOCAL_HOSTS.has(host)) {
-      return NextResponse.json({ error: "RetrainWise only accepts requests from this computer (localhost)." }, { status: 403 });
-    }
+  if (!allowedHost(hostname(req.headers.get("host")))) {
+    return NextResponse.json({ error: "This host is not allowed. Add it to RETRAINWISE_ALLOWED_HOSTS." }, { status: 403 });
   }
   if (req.method !== "GET" && req.method !== "HEAD") {
     const type = req.headers.get("content-type") ?? "";
@@ -43,15 +49,36 @@ function guard(req: NextRequest): NextResponse | null {
   return null;
 }
 
-type Ctx<P> = { params: Promise<P> };
+export type RouteCtx = Ctx & { engine: WsEngine };
+type Ctx2<P> = { params: Promise<P> };
+type Options = { permission?: Permission; limit?: { max: number; windowMs: number } | false };
 
-export function route<P = Record<string, string>>(handler: (req: NextRequest, params: P) => Promise<unknown>) {
-  return async (req: NextRequest, ctx: Ctx<P>) => {
+/**
+ * Authenticated, authorised API route. The handler receives the caller's
+ * workspace context and a workspace-scoped engine client. Mutations are rate
+ * limited per user and path (default 40 per minute).
+ */
+export function route<P = Record<string, string>>(
+  handler: (req: NextRequest, params: P, ctx: RouteCtx) => Promise<unknown>,
+  options: Options = {},
+) {
+  return async (req: NextRequest, c: Ctx2<P>) => {
     const blocked = guard(req);
     if (blocked) return blocked;
     try {
-      const params = (ctx?.params ? await ctx.params : {}) as P;
-      const result = await handler(req, params);
+      const ctx = await requireApi(options.permission ?? "view");
+      if (req.method !== "GET" && options.limit !== false) {
+        const lim = options.limit || { max: 40, windowMs: 60_000 };
+        const r = rateLimit(`${ctx.user.id}:${req.nextUrl.pathname}`, lim.max, lim.windowMs);
+        if (!r.ok) {
+          return NextResponse.json(
+            { error: `Too many requests. Try again in ${r.retryAfter} s.`, kind: "rate_limited" },
+            { status: 429, headers: { "Retry-After": String(r.retryAfter) } },
+          );
+        }
+      }
+      const params = (c?.params ? await c.params : {}) as P;
+      const result = await handler(req, params, { ...ctx, engine: wsEngine(ctx.workspace.id) });
       if (result instanceof Response) return result;
       return NextResponse.json(result ?? { ok: true }, { headers: { "Cache-Control": "no-store" } });
     } catch (err) {
@@ -61,16 +88,13 @@ export function route<P = Record<string, string>>(handler: (req: NextRequest, pa
 }
 
 export function errorResponse(err: unknown): NextResponse {
-  if (err instanceof EngineError) {
-    return NextResponse.json({ error: err.message, kind: err.kind }, { status: err.status });
-  }
+  if (err instanceof AuthError) return NextResponse.json({ error: err.message, kind: "auth" }, { status: err.status });
+  if (err instanceof EngineError) return NextResponse.json({ error: err.message, kind: err.kind }, { status: err.status });
   if (err instanceof z.ZodError) {
     const issues = err.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`);
     return NextResponse.json({ error: issues.join("; "), kind: "invalid", issues }, { status: 400 });
   }
-  if (err instanceof SyntaxError) {
-    return NextResponse.json({ error: "Request body is not valid JSON.", kind: "invalid" }, { status: 400 });
-  }
+  if (err instanceof SyntaxError) return NextResponse.json({ error: "Request body is not valid JSON.", kind: "invalid" }, { status: 400 });
   console.error("[retrainwise api]", err);
   return NextResponse.json({ error: (err as Error)?.message || "Unexpected server error", kind: "internal" }, { status: 500 });
 }
@@ -83,5 +107,5 @@ export async function body<T extends z.ZodTypeAny>(req: NextRequest, schema: T):
 
 export const sizeEnum = z.enum(["small", "standard", "full"]);
 export const prefixSchema = z.string().regex(/^[A-Za-z0-9_]{1,80}$/, "invalid result set name");
-export const ident =z.string().regex(/^[A-Za-z0-9]{1,32}$/, "must be an alphanumeric identifier");
-export const actorName = z.string().trim().min(1, "is required").max(80, "must be at most 80 characters");
+export const ident = z.string().regex(/^[A-Za-z0-9]{1,32}$/, "must be an alphanumeric identifier");
+export const reasonText = z.string().trim().max(500).default("");

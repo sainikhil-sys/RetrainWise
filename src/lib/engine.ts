@@ -76,7 +76,16 @@ export type Command =
   | "experiment_results"
   | "experiment_traces"
   | "pricing"
-  | "catalog";
+  | "catalog"
+  | "submit_training"
+  | "training_options"
+  | "revalidate_candidate"
+  | "review_candidate"
+  | "promote_candidate"
+  | "create_request"
+  | "reject_request"
+  | "delete_job"
+  | "result_file";
 
 /** Human-readable labels for the "engine busy" indicator. */
 export const COMMAND_LABELS: Partial<Record<Command, string>> = {
@@ -96,6 +105,10 @@ export const COMMAND_LABELS: Partial<Record<Command, string>> = {
   experiment_traces: "Reading per-batch traces",
   reference_window: "Loading the model artifact",
   what_if: "Re-ranking actions under new assumptions",
+  submit_training: "Queueing the training job",
+  revalidate_candidate: "Validating the candidate on withheld data",
+  promote_candidate: "Promoting the validated model",
+  review_candidate: "Recording the review",
 };
 
 type CallOptions = { timeoutMs?: number; dedupeKey?: string };
@@ -404,4 +417,31 @@ export function engine(): EngineDaemon {
 
 export function engineCall<T>(command: Command, args: Record<string, unknown> = {}, opts: CallOptions = {}) {
   return engine().call<T>(command, args, opts);
+}
+
+export type WsEngine = {
+  call<T>(command: Command, args?: Record<string, unknown>, opts?: CallOptions): Promise<T>;
+  isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number): Promise<T>;
+  workspace: string;
+};
+
+/** Engine client scoped to one workspace (its own engine database and artifacts). */
+export function wsEngine(workspaceId: string): WsEngine {
+  return {
+    workspace: workspaceId,
+    call<T>(command: Command, args: Record<string, unknown> = {}, opts: CallOptions = {}) {
+      return engine().call<T>(command, { ...args, workspace: workspaceId }, {
+        ...opts,
+        dedupeKey: opts.dedupeKey ? `${workspaceId}:${opts.dedupeKey}` : undefined,
+      });
+    },
+    isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number) {
+      return engine().isolatedCall<T>(command, { ...args, workspace: workspaceId }, `${workspaceId}:${key}`, timeoutMs);
+    },
+  };
+}
+
+export function workspaceDir(workspaceId: string) {
+  if (!/^[a-z0-9]{8,40}$/.test(workspaceId)) throw new EngineError("invalid", "Invalid workspace id");
+  return path.join(ENGINE_DIR, "workspaces", workspaceId);
 }

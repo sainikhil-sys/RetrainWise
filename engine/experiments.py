@@ -408,7 +408,8 @@ def oracle(frame: pd.DataFrame, settings: Settings, matrix: dict, trace: np.ndar
 # ---------------------------------------------------------------- benchmark
 def benchmark(datasets=("synthetic",), size="small", seeds=(42,), regimes=("balanced",), policies=POLICIES,
               settings: Settings | None = None, root: Path = ROOT, prefix: str = "results",
-              progress=lambda fraction, message: None, cancel=lambda: False, write: bool = True) -> dict:
+              progress=lambda fraction, message: None, cancel=lambda: False, write: bool = True,
+              data_root: Path | None = None) -> dict:
     base = (settings or Settings()).validate()
     if size not in SAMPLE_SIZES:
         raise ValueError(f"size must be one of {list(SAMPLE_SIZES)}")
@@ -422,7 +423,7 @@ def benchmark(datasets=("synthetic",), size="small", seeds=(42,), regimes=("bala
     done, rows, details = 0, [], []
     started = time.perf_counter()
     for name, seed in cells:
-        frame = load(name, size, int(seed), root)
+        frame = load(name, size, int(seed), data_root or root)
         cfg0 = base.replace(seed=int(seed), autonomy=False)
         progress(done / total, f"{name} seed {seed}: training initial model")
         start_state = initial_model(frame, cfg0)

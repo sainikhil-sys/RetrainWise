@@ -850,6 +850,100 @@ class StalenessTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------- training jobs
+class TrainingTests(TempDirCase):
+    """"Train model": real worker training, exact metrics, approval-gated promotion."""
+
+    def setUp(self):
+        super().setUp()
+        self.db = Database(self.dir / "t.db")
+        self.life = Lifecycle(self.db, self.dir)
+        self.life.save_settings(Settings(**FAST, cooldown_batches=1, min_confidence=0.6))
+        self.cfg = {"scope": "stream", "dataset": "synthetic", "size": "small", "seed": 5, "initial_window": 800,
+                    "validation_fraction": 0.25, "model": {"type": "sgd_logistic", "epochs": 4},
+                    "preprocessing": {"scale": True}}
+
+    def submit(self, cfg=None, incumbent=None):
+        return jobs.submit(self.db, {"config": cfg or self.cfg, "settings": self.life.settings().to_dict(),
+                                     "incumbent_version": incumbent}, actor="ops@example.com", kind="training",
+                           root=self.dir, launch=False)
+
+    def test_exact_metrics(self):
+        import training
+        m = training.exact_metrics(["a", "a", "b", "b"], ["a", "b", "b", "b"], ["a", "b"])
+        self.assertEqual(m["accuracy"], 0.75)
+        self.assertEqual(m["confusion_matrix"], [[1, 1], [0, 2]])
+        self.assertAlmostEqual(m["per_class"][1]["precision"], 2 / 3)
+        self.assertEqual(m["error_rate"], 0.25)
+
+    def test_stream_training_job_registers_candidate_and_promotes_with_approval(self):
+        job, created = self.submit()
+        self.assertTrue(created)
+        self.assertEqual(self.submit()[0], job)                      # duplicate request -> same job
+        self.assertEqual(worker.run(job, self.db.path), "completed")
+        stages = [r["message"] for r in self.db.query(
+            "SELECT message FROM job_logs WHERE job_id=? AND level='stage' ORDER BY id", (job,))]
+        self.assertEqual(stages, ["queued", "preparing data", "preprocessing", "training", "validating", "registering",
+                                  "completed"])
+        result = json.loads(self.db.one("SELECT result FROM jobs WHERE id=?", (job,))["result"])
+        version = result["version"]
+        row = self.db.one("SELECT status, metadata FROM models WHERE version=?", (version,))
+        self.assertEqual(row["status"], "candidate")
+        meta = json.loads(row["metadata"])
+        m = meta["evaluation"]["metrics"]
+        self.assertEqual(m["n"], 200)
+        self.assertEqual(m["correct"] / m["n"], m["accuracy"])        # exact, not rounded
+        self.assertEqual(sum(map(sum, m["confusion_matrix"])), 200)
+        self.assertEqual(meta["evaluation"]["train_interval"], [0, 600])
+        self.assertEqual(meta["evaluation"]["validation_interval"], [600, 800])
+        self.assertIsNone(self.life.active_run())                     # production unchanged
+        with self.assertRaises(PermissionError):
+            self.life.promote_candidate(version, "approver@example.com", "approver", approved=False)
+        self.assertTrue(meta["gate"]["passed"], meta["gate"])
+        if meta["gate"]["passed"]:
+            out = self.life.promote_candidate(version, "approver@example.com", "approver", approved=True)
+            run = self.life.active_run()
+            self.assertEqual(run["active_version"], version)
+            self.assertEqual(run["position"], 800)
+            self.life.process_batch(run["id"], run["position"])       # the promoted model serves the stream
+            self.assertEqual(out["status"], "promoted")
+        with self.assertRaises(Exception):                            # audit events are immutable
+            with self.db.transaction() as c:
+                c.execute("UPDATE events SET kind='x'")
+
+    def test_cancelled_job_registers_nothing(self):
+        job, _ = self.submit({**self.cfg, "seed": 9})
+        jobs.cancel(self.db, job)
+        self.assertEqual(worker.run(job, self.db.path), "cancelled")
+        self.assertEqual(self.db.query("SELECT COUNT(*) AS n FROM models")[0]["n"], 0)
+
+    def test_run_scope_compares_with_the_active_model(self):
+        run = self.life.start_run("synthetic", "small", 3)
+        for _ in range(6):
+            r = self.life.run(run["id"])
+            self.life.process_batch(r["id"], r["position"])
+        cfg = {"scope": "run", "run_id": run["id"], "train_window": 1500, "seed": 3, "validation_fraction": 0.3,
+               "model": {"type": "random_forest", "n_estimators": 20}}
+        job, _ = self.submit(cfg, incumbent=run["active_version"])
+        self.assertEqual(worker.run(job, self.db.path), "completed")
+        version = json.loads(self.db.one("SELECT result FROM jobs WHERE id=?", (job,))["result"])["version"]
+        meta = json.loads(self.db.one("SELECT metadata FROM models WHERE version=?", (version,))["metadata"])
+        parent = meta["evaluation"]["parent"]
+        self.assertEqual(parent["version"], run["active_version"])
+        self.assertAlmostEqual(parent["accuracy_change"],
+                               meta["evaluation"]["metrics"]["accuracy"] - parent["metrics"]["accuracy"])
+        out = self.life.review_candidate(version, "reject", "approver@example.com", "approver", "not convincing")
+        self.assertEqual(out["status"], "rejected")
+        with self.assertRaises(LifecycleError):
+            self.life.promote_candidate(version, "approver@example.com", "approver", approved=True)
+
+    def test_invalid_training_configuration(self):
+        for bad in ({"dataset": "nope"}, {"model": {"type": "xgboost"}}, {"initial_window": 10},
+                    {"validation_fraction": 0.9}, {"preprocessing": {"numeric_impute": "zero"}}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.submit({**self.cfg, **bad})
+
+
 # ------------------------------------------------------------------- web bridge
 class BridgeTests(TempDirCase):
     """The JSON bridge used by the Next.js app: allow-listed commands, argument

@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+DATA_ROOT = ROOT                        # shared dataset caches (data_<name>.csv.gz + provenance)
+WORKSPACES_ROOT = ROOT / "workspaces"   # one engine database + artifacts per workspace
 DB_PATH = ROOT / "retrainwise.db"
 LOG_PATH = ROOT / "retrainwise.log"
 PRICING_PATH = ROOT / "pricing_snapshot.json"
@@ -19,6 +21,7 @@ PRICING_PATH = ROOT / "pricing_snapshot.json"
 REGIMES = ("cheap", "balanced", "expensive")
 COST_TRACE_KINDS = ("flat", "diurnal", "spot", "custom")
 PROBE_MODES = ("adaptive", "fixed")
+BENEFIT_BASES = ("probe", "holdout")
 AGENT_MODES = ("deterministic", "ollama")
 ESTIMATORS = ("sgd_logistic",)
 
@@ -69,6 +72,10 @@ class Settings:
     partial_recovery_prior: float = 0.5   # prior share of avoidable error a partial update recovers
     full_recovery_prior: float = 0.9      # prior share of avoidable error a full retrain recovers
     recovery_prior_weight: float = 2.0
+    # Which estimate drives expected benefit: the probe difference-in-differences
+    # avoidable error (research approach, default) or the chronological hold-out
+    # reduction (v1 rule). See RESEARCH_REPORT.md for how they compare.
+    benefit_basis: str = "probe"
 
     # Economics
     regime: str = "balanced"
@@ -150,6 +157,8 @@ class Settings:
             raise ValueError("windows, horizon, evidence and limits must be at least 1")
         if self.agent_max_iterations > 12 or self.agent_timeout_seconds > 600:
             raise ValueError("agent limits too large (max 12 iterations, 600 seconds)")
+        if self.benefit_basis not in BENEFIT_BASES:
+            raise ValueError(f"benefit_basis must be one of {BENEFIT_BASES}")
         if self.probe_mode not in PROBE_MODES:
             raise ValueError(f"probe_mode must be one of {PROBE_MODES}")
         if min(self.probe_every, self.probe_min_interval, self.probe_max_interval, self.probe_epochs,

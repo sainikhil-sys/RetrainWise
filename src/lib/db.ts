@@ -4,46 +4,45 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
-import { ENGINE_DIR, engineCall } from "./engine";
+import { wsEngine, workspaceDir } from "./engine";
 
 /**
- * Read-only access to the engine's SQLite database (engine/retrainwise.db).
+ * Read-only access to a workspace's engine database
+ * (engine/workspaces/<workspaceId>/retrainwise.db).
  *
- * SQLite is the single source of truth. The web server only reads it directly;
- * every write goes through the Python engine, which wraps changes in
- * BEGIN IMMEDIATE transactions. WAL mode lets these reads run while the engine
- * or a benchmark worker is writing.
+ * Each workspace's engine store is the source of truth for its telemetry,
+ * registry, decisions, jobs and engine audit events. The web server only reads
+ * it; every write goes through the Python engine inside BEGIN IMMEDIATE
+ * transactions. WAL mode lets these reads run while the engine writes.
  */
-export const DB_PATH = path.join(ENGINE_DIR, "retrainwise.db");
+const globalForDb = globalThis as unknown as { __rwEngineDbs?: Map<string, Database.Database> };
+const cache = (globalForDb.__rwEngineDbs ??= new Map());
 
-const globalForDb = globalThis as unknown as { __retrainwiseDb?: Database.Database };
-
-function open(): Database.Database {
-  const db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+function open(file: string): Database.Database {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
   db.pragma("busy_timeout = 5000");
   return db;
 }
 
-/** True when the schema exists (the engine creates it on first start). */
 function hasSchema(db: Database.Database): boolean {
-  const row = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('runs','events','settings')").get() as { n: number };
-  return row.n === 3;
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('runs','events','settings','probes','job_logs')")
+    .get() as { n: number };
+  return row.n === 5;
 }
 
-export async function getDb(): Promise<Database.Database> {
-  const cached = globalForDb.__retrainwiseDb;
+export async function getDb(workspaceId: string): Promise<Database.Database> {
+  const cached = cache.get(workspaceId);
   if (cached && cached.open) return cached;
-  if (!fs.existsSync(DB_PATH)) {
-    // First start: the engine creates the schema and default settings.
-    await engineCall("ping", {}, { timeoutMs: 180_000 });
-  }
-  let db = open();
+  const file = path.join(workspaceDir(workspaceId), "retrainwise.db");
+  if (!fs.existsSync(file)) await wsEngine(workspaceId).call("ping", {}, { timeoutMs: 180_000 });
+  let db = open(file);
   if (!hasSchema(db)) {
     db.close();
-    await engineCall("ping", {}, { timeoutMs: 180_000 });
-    db = open();
+    await wsEngine(workspaceId).call("ping", {}, { timeoutMs: 180_000 });
+    db = open(file);
   }
-  globalForDb.__retrainwiseDb = db;
+  cache.set(workspaceId, db);
   return db;
 }
 

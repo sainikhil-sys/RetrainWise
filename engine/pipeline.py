@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config import ROOT, Settings, safe_child
+from config import DATA_ROOT, ROOT, Settings, safe_child
 from database import Database, dumps, loads, now
 from datasets import frame_sha256, load
 from economics import (action_costs, cost_trace, justification, rank_actions, realization_factor,
@@ -57,8 +57,9 @@ def _parse_run(row) -> dict | None:
 
 
 class Lifecycle:
-    def __init__(self, db: Database | None = None, root: Path = ROOT):
+    def __init__(self, db: Database | None = None, root: Path = ROOT, data_root: Path | None = None):
         self.root = Path(root)
+        self.data_root = Path(data_root) if data_root is not None else (DATA_ROOT if self.root == ROOT else self.root)
         self.db = db or Database(self.root / "retrainwise.db")
 
     # ------------------------------------------------------------- settings
@@ -95,7 +96,13 @@ class Lifecycle:
         key = (run["dataset"], run["size_label"], run["seed"], str(self.root))
         if key not in _FRAMES:
             size = None if run["size_label"] == "full" else run["n_rows"]
-            frame = load(run["dataset"], size, run["seed"], self.root)
+            target = (run.get("monitor_state") or {}).get("target_column") or "target"
+            if target != "target":
+                from training import prepare_frame
+                frame = prepare_frame({"dataset": run["dataset"], "size": run["size_label"], "seed": run["seed"],
+                                       "target_column": target}, self.data_root)
+            else:
+                frame = load(run["dataset"], size, run["seed"], self.data_root)
             if frame_sha256(frame) != run["data_sha256"]:
                 raise LifecycleError("Cached dataset differs from the one this run started with; start a new run")
             _FRAMES.clear()
@@ -125,7 +132,7 @@ class Lifecycle:
         settings = self.settings()
         if seed is not None:
             settings = settings.replace(seed=int(seed))
-        frame = load(dataset, size, settings.seed, self.root)
+        frame = load(dataset, size, settings.seed, self.data_root)
         if len(frame) < settings.initial_size + settings.batch_size:
             raise LifecycleError("Stream too short for the initial window plus one batch")
         model, ref = initial_model(frame, settings)
@@ -641,11 +648,16 @@ class Lifecycle:
                           c, None, prepared_by[:80])
             return int(cur.lastrowid)
 
-    def dismiss_request(self, request_id: int, actor: str) -> None:
+    def dismiss_request(self, request_id: int, actor: str, reason: str = "", status: str = "dismissed") -> None:
+        if status not in ("dismissed", "rejected"):
+            raise LifecycleError("Unknown request status")
         with self.db.transaction() as c:
-            c.execute("UPDATE execution_requests SET status='dismissed' WHERE id=? AND status='awaiting_approval'",
-                      (int(request_id),))
-            self.db.event("execution_request_dismissed", {"request": int(request_id)}, c, None, actor)
+            n = c.execute(f"UPDATE execution_requests SET status=? WHERE id=? AND status='awaiting_approval'",
+                          (status, int(request_id))).rowcount
+            if not n:
+                raise LifecycleError("Request is not awaiting approval")
+            self.db.event(f"execution_request_{status}", {"request": int(request_id), "reason": reason[:500]},
+                          c, None, actor)
 
     # --------------------------------------------------------------- autonomy
     def autonomous_step(self, run_id: str) -> dict:
@@ -673,6 +685,218 @@ class Lifecycle:
                     "decision": decision["id"]}
         result = self.execute(decision["id"], top["action"], "bounded-autonomy policy", mode="autonomous")
         return {"acted": True, "decision": decision["id"], **result}
+
+    # ----------------------------------------------------- trained candidates
+    def register_candidate(self, job_id: str, cfg: dict, result: dict, actor: str) -> int:
+        """Register a trained model as a *candidate*. Production is unchanged."""
+        from training import promotion_gate
+        settings = self.settings()
+        model, evaluation = result["model"], result["evaluation"]
+        gate = promotion_gate(evaluation, settings)
+        parent = evaluation["parent"]["version"] if evaluation.get("parent") else None
+        meta = {"kind": "trained", "scope": cfg["scope"], "job": job_id, "config": cfg, "evaluation": evaluation,
+                "evaluations": [{"at": now(), "by": actor, "kind": "training", "evaluation": evaluation, "gate": gate}],
+                "gate": gate, "created_by": actor, "reviews": [], "parent_version": parent,
+                "reference_error": evaluation["metrics"]["error_rate"],
+                "dataset": cfg.get("dataset") or (self.run(cfg.get("run_id")) or {}).get("dataset"),
+                "settings": settings.to_dict()}
+        with self.db.transaction() as c:
+            cur = c.execute("INSERT INTO models(run_id,created,artifact,sha256,parent_version,action,status,train_start,"
+                            "train_end,n_train,seed,metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (cfg.get("run_id") or "", now(), None, None, parent, "trained", "candidate",
+                             model.train_start, model.train_end, model.n_train, model.seed, "{}"))
+            version = int(cur.lastrowid)
+            name = f"model_v{version:03d}.joblib"
+            meta.update(version=version, model=model.describe(), created=now())
+            sha = save_artifact(model, self.path(name), meta)
+            c.execute("UPDATE models SET artifact=?, sha256=?, metadata=? WHERE version=?",
+                      (name, sha, dumps(meta), version))
+            self.db.event("model_candidate_registered", {
+                "version": version, "job": job_id, "scope": cfg["scope"], "model_type": cfg["model"]["type"],
+                "accuracy": evaluation["metrics"]["accuracy"], "gate_passed": gate["passed"],
+                "note": "candidate only; production unchanged until approved promotion"},
+                c, cfg.get("run_id") or None, actor)
+        return version
+
+    def _candidate(self, version: int) -> tuple[dict, dict]:
+        row = self.db.one("SELECT * FROM models WHERE version=?", (int(version),))
+        if row is None or row["action"] != "trained":
+            raise LifecycleError("Unknown trained model version")
+        return row, loads(row["metadata"])
+
+    def revalidate_candidate(self, version: int, actor: str) -> dict:
+        """Re-score a candidate on withheld chronological data (newest labelled
+        rows for run-scope candidates; its original window otherwise)."""
+        from training import exact_metrics, prepare_frame, promotion_gate
+        settings = self.settings()
+        row, meta = self._candidate(version)
+        if row["status"] != "candidate":
+            raise LifecycleError(f"Model v{version:03d} is {row['status']}; only candidates can be validated")
+        candidate = self.model(version)
+        cfg = meta["config"]
+        evaluation = dict(meta["evaluation"])
+        if cfg["scope"] == "run":
+            run = self.run(cfg["run_id"])
+            if run is None or run["status"] != "active":
+                raise LifecycleError("The run this candidate was trained for is no longer active")
+            incumbent = self.model(run["active_version"])
+            frame = self.frame(run)
+            labelled = [r["row"] for r in self.db.query(
+                "SELECT row FROM predictions WHERE run_id=? AND revealed_batch IS NOT NULL ORDER BY row", (run["id"],))]
+            start = max(candidate.trained_until, incumbent.trained_until)
+            fresh = np.asarray([r for r in labelled if r >= start], dtype=int)
+            if len(fresh) < 20:
+                raise LifecycleError("No labelled rows newer than both models yet; process more batches")
+            rows = fresh[-max(meta["evaluation"]["n_validation"], min(len(fresh), 2000)):]
+            val = frame.loc[rows]
+            truth = val["target"].astype(str).to_numpy()
+            labels = sorted(set(candidate.classes) | set(truth))
+            m = exact_metrics(truth, candidate.predict(val.drop(columns="target")), labels)
+            inc = exact_metrics(truth, incumbent.predict(val.drop(columns="target")), labels)
+            evaluation.update(metrics=m, validation_interval=[int(rows[0]), int(rows[-1]) + 1],
+                              n_validation=int(len(rows)),
+                              parent={"comparable": True, "version": run["active_version"], "metrics": inc,
+                                      "accuracy_change": m["accuracy"] - inc["accuracy"],
+                                      "error_change": m["error_rate"] - inc["error_rate"],
+                                      "f1_change": m["f1"] - inc["f1"],
+                                      "note": "both models scored on the same rows; neither learned from them"})
+        else:
+            frame = prepare_frame(cfg, self.data_root)
+            lo, hi = meta["evaluation"]["validation_interval"]
+            val = frame.iloc[lo:hi]
+            truth = val["target"].astype(str).to_numpy()
+            evaluation["metrics"] = exact_metrics(truth, candidate.predict(val.drop(columns="target")),
+                                                  meta["evaluation"]["classes"])
+        gate = promotion_gate(evaluation, settings)
+        meta["evaluation"], meta["gate"] = evaluation, gate
+        meta["evaluations"].append({"at": now(), "by": actor, "kind": "revalidation", "evaluation": evaluation, "gate": gate})
+        with self.db.transaction() as c:
+            c.execute("UPDATE models SET metadata=? WHERE version=?", (dumps(meta), int(version)))
+            self.db.event("candidate_validated", {"version": int(version), "accuracy": evaluation["metrics"]["accuracy"],
+                                                  "gate_passed": gate["passed"],
+                                                  "validation_interval": evaluation["validation_interval"]},
+                          c, row["run_id"] or None, actor)
+        return {"version": int(version), "evaluation": evaluation, "gate": gate}
+
+    def review_candidate(self, version: int, action: str, actor: str, role: str, reason: str = "") -> dict:
+        """Record a promotion request (operator) or a rejection (approver)."""
+        if action not in ("request", "reject"):
+            raise LifecycleError("Unknown review action")
+        row, meta = self._candidate(version)
+        if row["status"] != "candidate":
+            raise LifecycleError(f"Model v{version:03d} is already {row['status']}")
+        if action == "request" and any(r["action"] == "request" for r in meta["reviews"]):
+            raise LifecycleError("Promotion was already requested for this candidate")
+        meta["reviews"].append({"action": action, "by": actor, "role": role, "at": now(), "reason": reason[:500]})
+        with self.db.transaction() as c:
+            if action == "reject":
+                c.execute("UPDATE models SET status='rejected', metadata=? WHERE version=?", (dumps(meta), int(version)))
+            else:
+                c.execute("UPDATE models SET metadata=? WHERE version=?", (dumps(meta), int(version)))
+            self.db.event("candidate_promotion_requested" if action == "request" else "candidate_rejected",
+                          {"version": int(version), "reason": reason[:500], "role": role}, c, row["run_id"] or None, actor)
+        return {"version": int(version), "status": "rejected" if action == "reject" else "candidate"}
+
+    def promote_candidate(self, version: int, actor: str, role: str, approved: bool = False) -> dict:
+        """Approved promotion of a validated trained candidate.
+
+        run scope: replaces the active model of the run it was trained for.
+        stream scope: starts a new monitored run whose stream begins after the
+        candidate's training window (the current run is closed)."""
+        from training import prepare_frame
+        if not approved:
+            raise PermissionError("Promotion requires explicit approval")
+        settings = self.settings()
+        row, meta = self._candidate(version)
+        if row["status"] != "candidate":
+            raise LifecycleError(f"Model v{version:03d} is {row['status']}; it cannot be promoted")
+        if not meta["gate"]["passed"]:
+            raise LifecycleError("The latest validation did not pass the promotion gate; validate again or reject")
+        candidate = self.model(version)
+        cfg, evaluation = meta["config"], meta["evaluation"]
+        meta["reviews"].append({"action": "approve", "by": actor, "role": role, "at": now(), "reason": ""})
+        lo, hi = evaluation["validation_interval"]
+        if cfg["scope"] == "run":
+            run = self.run(cfg["run_id"])
+            if run is None or run["status"] != "active":
+                raise LifecycleError("The run this candidate was trained for is no longer active")
+            parent = evaluation.get("parent") or {}
+            if run["active_version"] != parent.get("version"):
+                raise LifecycleError("The active model changed after this candidate was validated; validate again")
+            if candidate.trained_until > run["position"]:
+                raise LifecycleError("Candidate learned from rows the stream has not reached")
+            frame = self.frame(run)
+            val_rows = [r["row"] for r in self.db.query(
+                "SELECT row FROM predictions WHERE run_id=? AND revealed_batch IS NOT NULL AND row>=? AND row<? "
+                "ORDER BY row", (run["id"], lo, hi))]
+            history = list(range(run["settings"]["initial_size"])) + [r["row"] for r in self.db.query(
+                "SELECT row FROM predictions WHERE run_id=? AND revealed_batch IS NOT NULL AND row<? ORDER BY row",
+                (run["id"], lo))]
+            baseline = deployment_baseline(frame, history, val_rows, candidate.predict(
+                frame.loc[val_rows].drop(columns="target")), settings) if val_rows else None
+            cost = action_costs("full", settings, candidate.n_train, 1.0)
+            with self.db.transaction() as c:
+                live = _parse_run(c.execute("SELECT * FROM runs WHERE id=?", (run["id"],)).fetchone())
+                if live["active_version"] != run["active_version"]:
+                    raise LifecycleError("Run changed during promotion")
+                c.execute("UPDATE models SET status='archived' WHERE version=? AND status='active'", (live["active_version"],))
+                c.execute("UPDATE models SET status='active', metadata=? WHERE version=?", (dumps(meta), int(version)))
+                state = live["monitor_state"]
+                state["monitor"] = new_monitor(settings, evaluation["metrics"]["error_rate"], evaluation["metrics"]["n"],
+                                               candidate.psi_reference, baseline)
+                state["post_update"] = {"old_version": live["active_version"], "from_row": live["position"],
+                                        "predicted": -(parent.get("error_change") or 0.0), "decision": None,
+                                        "old_errors": 0, "new_errors": 0, "n": 0, "action": "full", "avoidable": None}
+                c.execute("UPDATE decisions SET status='stale', resolved=?, outcome='trained model promoted' "
+                          "WHERE run_id=? AND status='pending'", (now(), run["id"]))
+                c.execute("UPDATE runs SET active_version=?, spent=spent+?, last_update_batch=?, monitor_state=?, "
+                          "updated=? WHERE id=?", (int(version), cost["total"], live["batch_index"], dumps(state), now(),
+                                                   run["id"]))
+                c.execute("INSERT INTO cost_records(run_id,batch_index,created,kind,amount,detail) VALUES (?,?,?,?,?,?)",
+                          (run["id"], live["batch_index"], now(), "training", cost["total"],
+                           dumps({"version": int(version), "items": {k: cost[k] for k in ("compute", "engineering",
+                                                                                          "validation", "deployment_risk",
+                                                                                          "probe")}})))
+                self.db.event("model_promoted", {
+                    "version": int(version), "from_version": live["active_version"], "source": "trained model",
+                    "accuracy": evaluation["metrics"]["accuracy"], "accuracy_change": parent.get("accuracy_change"),
+                    "summary": f"Model v{int(version):03d} promoted after chronological validation"},
+                    c, run["id"], actor)
+            return {"status": "promoted", "version": int(version), "run_id": run["id"]}
+        # stream scope: start a new monitored run with this model
+        frame = prepare_frame(cfg, self.data_root)
+        window = min(cfg["initial_window"], len(frame))
+        if len(frame) < window + settings.batch_size:
+            raise LifecycleError("Stream too short for the training window plus one batch")
+        x_val = frame.iloc[lo:hi]
+        baseline = deployment_baseline(frame, list(range(lo)), list(range(lo, hi)),
+                                       candidate.predict(x_val.drop(columns="target")), settings)
+        run_settings = settings.replace(seed=cfg["seed"], initial_size=window)
+        monitor = new_monitor(run_settings, evaluation["metrics"]["error_rate"], evaluation["metrics"]["n"],
+                              candidate.psi_reference, baseline)
+        state = {"monitor": monitor, "post_update": None, "outcomes": [], "last_telemetry": None,
+                 "target_column": cfg["target_column"]}
+        run_id = uuid.uuid4().hex[:10]
+        with self.db.transaction() as c:
+            c.execute("UPDATE runs SET status='closed', updated=? WHERE status='active'", (now(),))
+            c.execute("UPDATE decisions SET status='stale', resolved=?, outcome='run closed' WHERE status='pending'",
+                      (now(),))
+            c.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (run_id, now(), now(), cfg["dataset"], cfg["size"], len(frame), cfg["seed"], frame_sha256(frame),
+                       "active", window, 0, 0, 0, 0.0, 0.0, 0, int(version), dumps(state), dumps(run_settings.to_dict())))
+            c.execute("UPDATE models SET status='active', run_id=?, metadata=? WHERE version=?",
+                      (run_id, dumps(meta), int(version)))
+            self.db.event("run_started", {"dataset": cfg["dataset"], "size": cfg["size"], "rows": len(frame),
+                                          "seed": cfg["seed"], "version": int(version),
+                                          "reference_error": evaluation["metrics"]["error_rate"],
+                                          "source": "promoted trained model"}, c, run_id, actor)
+            self.db.event("model_promoted", {
+                "version": int(version), "from_version": None, "source": "trained model",
+                "accuracy": evaluation["metrics"]["accuracy"],
+                "summary": f"Model v{int(version):03d} promoted after chronological validation; new run {run_id}"},
+                c, run_id, actor)
+        self.db.put_setting("active", run_settings.to_dict())
+        return {"status": "promoted", "version": int(version), "run_id": run_id}
 
     # ------------------------------------------------------------- read models
     def telemetry(self, run_id: str) -> pd.DataFrame:

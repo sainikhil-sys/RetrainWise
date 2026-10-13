@@ -37,6 +37,7 @@ export type Settings = {
   partial_recovery_prior: number;
   full_recovery_prior: number;
   recovery_prior_weight: number;
+  benefit_basis: "probe" | "holdout";
   regime: Regime;
   cost_trace_kind: "flat" | "diurnal" | "spot" | "custom";
   cost_trace_custom: number[];
@@ -352,7 +353,7 @@ export type ModelRow = {
   sha256: string | null;
   parent_version: number | null;
   action: string;
-  status: "active" | "archived" | "rolled_back" | "rejected";
+  status: "active" | "archived" | "rolled_back" | "rejected" | "candidate";
   train_start: number | null;
   train_end: number | null;
   n_train: number | null;
@@ -379,7 +380,77 @@ export type ModelRow = {
       lineage?: unknown[];
     };
     created?: string;
+    // Trained models ("Train model")
+    kind?: "trained";
+    scope?: "stream" | "run";
+    job?: string;
+    config?: TrainingConfig;
+    evaluation?: TrainingEvaluation;
+    evaluations?: { at: string; by: string; kind: string; evaluation: TrainingEvaluation; gate: ValidationGate }[];
+    gate?: ValidationGate;
+    reviews?: { action: "request" | "reject" | "approve"; by: string; role: string; at: string; reason: string }[];
+    created_by?: string;
+    parent_version?: number | null;
   };
+};
+
+export type ExactMetrics = {
+  n: number;
+  correct: number;
+  accuracy: number;
+  error_rate: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  precision_weighted: number;
+  recall_weighted: number;
+  f1_weighted: number;
+  labels: string[];
+  confusion_matrix: number[][];
+  per_class: { label: string; precision: number; recall: number; f1: number; support: number }[];
+  majority_baseline_error: number;
+};
+
+export type TrainingEvaluation = {
+  metrics: ExactMetrics;
+  parent: null | {
+    comparable: boolean;
+    version: number;
+    metrics: ExactMetrics;
+    accuracy_change: number;
+    error_change: number;
+    f1_change: number;
+    note: string;
+  };
+  train_interval: [number, number];
+  validation_interval: [number, number];
+  n_train: number;
+  n_validation: number;
+  feature_count: number;
+  training_seconds: number;
+  validation_seconds: number;
+  total_seconds: number;
+  seed: number;
+  dataset_sha256: string;
+  classes: string[];
+};
+
+export type ModelSpec = { type: "sgd_logistic" | "sgd_hinge" | "sgd_modified_huber" | "random_forest"; alpha: number; epochs: number; n_estimators: number; max_depth: number | null };
+export type Preprocessing = { numeric_impute: "median" | "mean" | "most_frequent"; scale: boolean; max_categories: number };
+
+export type TrainingConfig = {
+  scope: "stream" | "run";
+  model: ModelSpec;
+  preprocessing: Preprocessing;
+  seed: number;
+  validation_fraction: number;
+  note: string;
+  dataset?: string;
+  size?: string;
+  initial_window?: number;
+  target_column?: string;
+  train_window?: number;
+  run_id?: string;
 };
 
 export type EventRow = {
@@ -452,8 +523,12 @@ export type JobRow = {
     regimes: string[];
     seeds: number[];
     size: string;
+    // training jobs
+    config?: TrainingConfig;
+    requested_by?: string;
+    incumbent_version?: number | null;
   };
-  result: { files: string[]; runs: number; wall_seconds: number } | null;
+  result: { files?: string[]; runs?: number; wall_seconds?: number; version?: number; evaluation?: TrainingEvaluation; gate?: ValidationGate } | null;
   error: string | null;
   finished: string | null;
 };

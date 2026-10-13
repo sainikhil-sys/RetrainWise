@@ -21,10 +21,52 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import SGDClassifier
 
 from monitoring import classification_metrics, psi_reference
-from preprocessing import align, category_vocabulary, fit_preprocessor, infer_schema
+from preprocessing import align, category_vocabulary, fit_preprocessor, infer_schema, preprocessing_options
+
+# Model types available for training. SGD variants support genuine incremental
+# updates (partial_fit); a random forest can only be fully retrained, so the
+# lifecycle reports partial updates for it as incompatible.
+MODEL_TYPES = {
+    "sgd_logistic": {"label": "Logistic regression (SGD)", "loss": "log_loss", "incremental": True},
+    "sgd_hinge": {"label": "Linear SVM (SGD, hinge loss)", "loss": "hinge", "incremental": True},
+    "sgd_modified_huber": {"label": "Robust linear classifier (SGD, modified Huber)", "loss": "modified_huber",
+                           "incremental": True},
+    "random_forest": {"label": "Random forest", "loss": None, "incremental": False},
+}
+
+
+def model_spec(settings, spec: dict | None = None) -> dict:
+    """Validated estimator specification; defaults come from Settings (SGD logistic)."""
+    base = {"type": "sgd_logistic", "alpha": float(settings.sgd_alpha), "epochs": int(settings.sgd_epochs),
+            "n_estimators": 100, "max_depth": None}
+    out = {**base, **(spec or {})}
+    unknown = set(out) - set(base)
+    if unknown:
+        raise ValueError(f"Unknown model parameters {sorted(unknown)}")
+    if out["type"] not in MODEL_TYPES:
+        raise ValueError(f"model type must be one of {list(MODEL_TYPES)}")
+    if not isinstance(out["alpha"], (int, float)) or not 0 < float(out["alpha"]) <= 1:
+        raise ValueError("alpha must be in (0, 1]")
+    for key, lo, hi in (("epochs", 1, 500), ("n_estimators", 1, 1000)):
+        if isinstance(out[key], bool) or not isinstance(out[key], int) or not lo <= out[key] <= hi:
+            raise ValueError(f"{key} must be an integer between {lo} and {hi}")
+    if out["max_depth"] is not None and (isinstance(out["max_depth"], bool) or not isinstance(out["max_depth"], int)
+                                         or not 1 <= out["max_depth"] <= 100):
+        raise ValueError("max_depth must be empty or an integer between 1 and 100")
+    out["alpha"] = float(out["alpha"])
+    return out
+
+
+def build_estimator(spec: dict, seed: int):
+    if spec["type"] == "random_forest":
+        return RandomForestClassifier(n_estimators=spec["n_estimators"], max_depth=spec["max_depth"],
+                                      random_state=seed, n_jobs=1)
+    return SGDClassifier(loss=MODEL_TYPES[spec["type"]]["loss"], alpha=spec["alpha"], max_iter=spec["epochs"],
+                         tol=1e-4, shuffle=True, random_state=seed, average=False)
 
 ARTIFACT_FORMAT = "retrainwise-model-v1"
 
@@ -64,10 +106,16 @@ def _xy(rows: pd.DataFrame):
     return rows.drop(columns="target"), rows["target"].astype(str).to_numpy()
 
 
-def train_full(rows: pd.DataFrame, settings, seed: int | None = None) -> ModelBundle:
+def train_full(rows: pd.DataFrame, settings, seed: int | None = None, spec: dict | None = None,
+               preprocessing: dict | None = None, progress=None, cancelled=None) -> ModelBundle:
     """Fit preprocessing and a fresh estimator on ``rows`` only.
 
     ``rows`` must be indexed by stream row number in chronological order.
+    ``spec`` / ``preprocessing`` select the model type and options (defaults
+    reproduce the original SGD logistic pipeline). When ``progress`` is given,
+    training runs epoch by epoch (SGD: one shuffled ``partial_fit`` pass per
+    epoch; random forest: trees added in chunks) and reports real progress;
+    ``cancelled()`` is checked between steps.
     """
     if len(rows) < 20:
         raise ValueError("Full training needs at least 20 labelled rows")
@@ -78,22 +126,47 @@ def train_full(rows: pd.DataFrame, settings, seed: int | None = None) -> ModelBu
     classes = sorted(set(y))
     if len(classes) < 2:
         raise ValueError("Training window contains a single class; full retraining is not possible")
+    spec = model_spec(settings, spec)
+    prep = preprocessing_options(preprocessing)
     schema = infer_schema(x)
-    transformer = fit_preprocessor(x, schema)
+    transformer = fit_preprocessor(x, schema, prep)
     aligned, _ = align(x, schema)
-    estimator = SGDClassifier(loss="log_loss", alpha=settings.sgd_alpha, max_iter=settings.sgd_epochs,
-                              tol=1e-4, shuffle=True, random_state=seed, average=False)
+    matrix = transformer.transform(aligned)
+    estimator = build_estimator(spec, seed)
     import warnings
     from sklearn.exceptions import ConvergenceWarning
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
-        estimator.fit(transformer.transform(aligned), y)
+        if progress is None and cancelled is None:
+            estimator.fit(matrix, y)
+        elif spec["type"] == "random_forest":
+            estimator.set_params(warm_start=True)
+            step = max(1, spec["n_estimators"] // 20)
+            for n in list(range(step, spec["n_estimators"], step)) + [spec["n_estimators"]]:
+                if cancelled and cancelled():
+                    raise InterruptedError("Training cancelled")
+                estimator.set_params(n_estimators=n)
+                estimator.fit(matrix, y)
+                if progress:
+                    progress(n / spec["n_estimators"], f"{n}/{spec['n_estimators']} trees")
+            estimator.set_params(warm_start=False)
+        else:
+            rng = np.random.default_rng(seed)
+            labels = np.asarray(classes)
+            for epoch in range(spec["epochs"]):
+                if cancelled and cancelled():
+                    raise InterruptedError("Training cancelled")
+                order = rng.permutation(len(y))
+                estimator.partial_fit(matrix[order], y[order], classes=labels)
+                if progress:
+                    progress((epoch + 1) / spec["epochs"], f"epoch {epoch + 1}/{spec['epochs']}")
     start, end = int(rows.index.min()), int(rows.index.max()) + 1
     return ModelBundle(
         transformer=transformer, estimator=estimator, schema=schema,
         classes=[str(c) for c in estimator.classes_], vocabulary=category_vocabulary(x, schema),
         train_start=start, train_end=end, trained_until=end, n_train=len(rows), seed=seed,
-        hyperparameters={"loss": "log_loss", "alpha": settings.sgd_alpha, "epochs": settings.sgd_epochs},
+        hyperparameters={"loss": MODEL_TYPES[spec["type"]]["loss"], "alpha": spec["alpha"], "epochs": spec["epochs"],
+                         "spec": spec, "preprocessing": prep, "feature_count": int(matrix.shape[1])},
         psi_reference=psi_reference(aligned, settings.psi_bins),
         history=[{"kind": "full", "rows": len(rows), "interval": [start, end]}])
 
@@ -210,7 +283,9 @@ def shadow_evaluate(frame: pd.DataFrame, eligible, incumbent: ModelBundle, setti
                           holdout_n=len(holdout), incumbent_error=inc_metrics["error"],
                           incumbent_f1=inc_metrics["f1"])
     builders = {
-        "full": lambda: train_full(frame.loc[plan["full_rows"]], settings),
+        "full": lambda: train_full(frame.loc[plan["full_rows"]], settings,
+                                   spec=incumbent.hyperparameters.get("spec"),
+                                   preprocessing=incumbent.hyperparameters.get("preprocessing")),
         "partial": lambda: partial_update(incumbent, frame.loc[plan["partial_rows"]]),
     }
     for action, build in builders.items():

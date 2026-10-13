@@ -14,6 +14,24 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 MAX_CATEGORIES = 200  # rarest categories beyond this are grouped as infrequent
+DEFAULT_PREPROCESSING = {"numeric_impute": "median", "scale": True, "max_categories": MAX_CATEGORIES}
+IMPUTE_STRATEGIES = ("median", "mean", "most_frequent")
+
+
+def preprocessing_options(options: dict | None = None) -> dict:
+    """Validated preprocessing options (defaults reproduce the original pipeline)."""
+    opts = {**DEFAULT_PREPROCESSING, **(options or {})}
+    unknown = set(opts) - set(DEFAULT_PREPROCESSING)
+    if unknown:
+        raise ValueError(f"Unknown preprocessing options {sorted(unknown)}")
+    if opts["numeric_impute"] not in IMPUTE_STRATEGIES:
+        raise ValueError(f"numeric_impute must be one of {IMPUTE_STRATEGIES}")
+    if not isinstance(opts["scale"], bool):
+        raise ValueError("scale must be true or false")
+    if isinstance(opts["max_categories"], bool) or not isinstance(opts["max_categories"], int) \
+            or not 2 <= opts["max_categories"] <= 1000:
+        raise ValueError("max_categories must be an integer between 2 and 1000")
+    return opts
 
 
 def infer_schema(x: pd.DataFrame) -> dict:
@@ -50,20 +68,22 @@ def align(x: pd.DataFrame, schema: dict) -> tuple[pd.DataFrame, dict]:
     return out, issues
 
 
-def fit_preprocessor(x: pd.DataFrame, schema: dict) -> ColumnTransformer:
+def fit_preprocessor(x: pd.DataFrame, schema: dict, options: dict | None = None) -> ColumnTransformer:
     """Fit imputation/scaling/encoding on the training window only."""
+    opts = preprocessing_options(options)
     aligned, _ = align(x, schema)
     transformers = []
     if schema["numeric"]:
-        transformers.append(("numeric", Pipeline([
-            ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
-            ("scale", StandardScaler())]), schema["numeric"]))
+        steps = [("impute", SimpleImputer(strategy=opts["numeric_impute"], keep_empty_features=True))]
+        if opts["scale"]:
+            steps.append(("scale", StandardScaler()))
+        transformers.append(("numeric", Pipeline(steps), schema["numeric"]))
     if schema["categorical"]:
         transformers.append(("categorical", Pipeline([
             ("impute", SimpleImputer(strategy="constant", fill_value="__missing__",
                                      keep_empty_features=True)),
             ("encode", OneHotEncoder(handle_unknown="infrequent_if_exist",
-                                     max_categories=MAX_CATEGORIES, sparse_output=True))]),
+                                     max_categories=opts["max_categories"], sparse_output=True))]),
             schema["categorical"]))
     if not transformers:
         raise ValueError("No usable features")

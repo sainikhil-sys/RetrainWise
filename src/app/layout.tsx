@@ -1,53 +1,30 @@
 import type { Metadata, Viewport } from "next";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import type { ReactNode } from "react";
 
-import { ToastProvider } from "@/components/client";
-import { AppShell, type ShellRun } from "@/components/shell";
-import { getActiveRun, getSettings } from "@/lib/queries";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 import "./globals.css";
 
+const display = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["normal", "italic"], variable: "--font-display" });
+const sans = Geist({ subsets: ["latin"], variable: "--font-geist" });
+const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
+
 export const metadata: Metadata = {
-  title: { default: "RetrainWise", template: "%s · RetrainWise" },
-  description: "Lifecycle-aware ML decision system: full retraining, incremental update, or defer — decided by evidence and cost.",
+  title: { default: "RetrainWise — retrain models when the value exceeds the cost", template: "%s · RetrainWise" },
+  description:
+    "RetrainWise helps ML teams decide when updating a model is worth the cost: it measures avoidable error with a fresh probe model, prices every update, and guides it through validation and approval.",
 };
 
-export const viewport: Viewport = { themeColor: "#0a1220", colorScheme: "dark" };
+export const viewport: Viewport = { themeColor: "#ffffff", colorScheme: "light" };
 
-export const dynamic = "force-dynamic";
-
-async function shellData(): Promise<{ run: ShellRun; autonomy: boolean }> {
-  try {
-    const [run, settings] = await Promise.all([getActiveRun(), getSettings()]);
-    return {
-      run: run && {
-        id: run.id,
-        dataset: run.dataset,
-        size: run.size_label,
-        position: run.position,
-        rows: run.n_rows,
-        version: run.active_version,
-        spent: run.spent,
-        budget: settings.budget,
-      },
-      autonomy: settings.autonomy,
-    };
-  } catch {
-    // The engine may still be starting (or Python is missing); pages show the detailed error.
-    return { run: null, autonomy: false };
-  }
-}
-
-export default async function RootLayout({ children }: { children: ReactNode }) {
-  const { run, autonomy } = await shellData();
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body className="font-sans antialiased">
-        <ToastProvider>
-          <AppShell run={run} autonomy={autonomy}>
-            {children}
-          </AppShell>
-        </ToastProvider>
+    <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable}`}>
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
+        <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
+        <Toaster position="bottom-right" />
       </body>
     </html>
   );

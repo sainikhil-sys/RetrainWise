@@ -2,12 +2,30 @@ import { z } from "zod";
 
 import { body, route, sizeEnum } from "@/lib/api";
 import { DATASETS, POLICIES, REGIMES } from "@/lib/catalog";
-import { engineCall } from "@/lib/engine";
+import { notify } from "@/lib/notify";
 import { getJobs } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async () => ({ jobs: await getJobs(12) }));
+/** Recent jobs. Finished jobs produce a one-time notification for the requester. */
+export const GET = route(async (req, _p, ctx) => {
+  const kind = req.nextUrl.searchParams.get("kind");
+  const jobs = (await getJobs(ctx.workspace.id, 25)).filter((j) => !kind || j.kind === kind);
+  for (const j of jobs.slice(0, 5)) {
+    if (["completed", "failed", "cancelled"].includes(j.status) && j.finished && Date.now() - Date.parse(j.finished) < 3_600_000) {
+      const training = j.kind === "training";
+      await notify({
+        workspaceId: ctx.workspace.id,
+        kind: "job",
+        title: `${training ? "Training" : "Benchmark"} job ${j.id} ${j.status}`,
+        body: training && j.result?.version ? `Candidate v${String(j.result.version).padStart(3, "0")} is ready for validation and review.` : j.error?.split("\n")[0] ?? "",
+        href: training ? "/models" : "/experiments",
+        dedupeKey: `job:${j.id}:${j.status}`,
+      });
+    }
+  }
+  return { jobs };
+});
 
 const Submit = z
   .object({
@@ -18,13 +36,13 @@ const Submit = z
     size: sizeEnum,
   })
   .refine((v) => new Set(v.seeds).size === v.seeds.length, { message: "seeds must be distinct", path: ["seeds"] })
-  .refine((v) => v.datasets.length * v.policies.length * v.regimes.length * v.seeds.length <= 400, {
-    message: "at most 400 runs per job",
-    path: ["seeds"],
-  });
+  .refine((v) => v.datasets.length * v.policies.length * v.regimes.length * v.seeds.length <= 400, { message: "at most 400 runs per job", path: ["seeds"] });
 
-/** Queue a benchmark job. It runs in a separate worker process with progress in SQLite. */
-export const POST = route(async (req) => {
-  const b = await body(req, Submit);
-  return engineCall("submit_job", b, { timeoutMs: 120_000, dedupeKey: "submit_job" });
-});
+/** Queue a benchmark job (worker process; progress in SQLite). */
+export const POST = route(
+  async (req, _p, ctx) => {
+    const b = await body(req, Submit);
+    return ctx.engine.call("submit_job", { ...b, actor: ctx.user.email }, { timeoutMs: 120_000, dedupeKey: "submit_job" });
+  },
+  { permission: "experiments.run", limit: { max: 10, windowMs: 60_000 } },
+);

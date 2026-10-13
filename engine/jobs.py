@@ -15,7 +15,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-from config import ROOT, REGIMES, SAMPLE_SIZES, Settings
+from config import DATA_ROOT, ROOT, REGIMES, SAMPLE_SIZES, Settings
 from database import Database, dumps, loads, now
 from datasets import DATASETS, is_cached
 from experiments import POLICIES
@@ -77,8 +77,20 @@ def recover(db: Database) -> int:
 
 def submit(db: Database, payload: dict, actor: str = "user", kind: str = "benchmark", root=ROOT,
            launch: bool = True) -> tuple[str, bool]:
-    """Queue a job and launch its worker. Returns (job_id, created)."""
-    payload = validate_payload(payload, root)
+    """Queue a job and launch its worker. Returns (job_id, created).
+
+    Identical requests (same payload hash) return the existing queued/running
+    job, so refreshes, repeated clicks and other tabs cannot start duplicates;
+    only one job may run per workspace at a time."""
+    if kind == "training":
+        from training import validate_config
+        settings = Settings.from_dict(payload.get("settings") or {})
+        payload = {"config": validate_config(payload.get("config"), settings, root), "settings": settings.to_dict(),
+                   "incumbent_version": payload.get("incumbent_version"), "requested_by": actor}
+    elif kind == "benchmark":
+        payload = validate_payload(payload, root)
+    else:
+        raise ValueError("Unknown job kind")
     digest = hashlib.sha256(dumps(payload).encode()).hexdigest()
     recover(db)
     with db.transaction() as c:
@@ -91,7 +103,9 @@ def submit(db: Database, payload: dict, actor: str = "user", kind: str = "benchm
         job_id = uuid.uuid4().hex[:10]
         c.execute("INSERT INTO jobs(id,created,kind,status,progress,message,payload,payload_hash) "
                   "VALUES (?,?,?,?,?,?,?,?)", (job_id, now(), kind, "queued", 0.0, "queued", dumps(payload), digest))
-        db.event("job_submitted", {"job": job_id, "payload": payload}, c, actor=actor)
+        c.execute("INSERT INTO job_logs(job_id,created,level,message) VALUES (?,?,?,?)",
+                  (job_id, now(), "stage", "queued"))
+        db.event("job_submitted", {"job": job_id, "kind": kind, "payload": payload}, c, actor=actor)
     if launch:
         _launch(db, job_id)
     return job_id, True
