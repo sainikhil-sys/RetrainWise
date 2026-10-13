@@ -10,18 +10,22 @@ Status values:
 Verification codes:
 
 * **[T]** automated test in `test_project.py`.
-* **[UI]** exercised in the running Streamlit app on 2026-10-12.
+* **[UI]** exercised in the running application on 2026-10-12 (then the Streamlit interface; the engine behaviour is unchanged).
+* **[W]** exercised against the Next.js dashboard on 2026-10-13/14: batch processing and approval/promotion through the
+  pages; evaluation, duplicate-request no-ops, rollback, deterministic and Ollama-fallback explanations, a benchmark
+  job, settings validation and the API guards through the same API routes the pages call.
 * **[R]** shown in exported benchmark results.
 
 ## Architecture constraints
 
 | Requirement | Status | Where / evidence |
 |---|---|---|
-| Python + Streamlit only; no other app framework or server | ✅ | `app.py`; worker is a plain `python worker.py` process [UI] |
-| One flat `RetrainWise` folder, no subfolders, no `pages/` | ✅ | Navigation via `st.sidebar.radio`; the venv lives in `%LOCALAPPDATA%` |
+| Next.js (App Router) + TypeScript + Tailwind CSS web application; Streamlit removed | ✅ | `src/app/`, `src/components/` [W] |
+| Python ML engine preserved and called safely | ✅ | `engine/bridge.py` (allow-listed JSON commands), `src/lib/engine.ts` (no shell, fixed script path, timeouts) [T][W] |
+| Secure local API routes | ✅ | `src/lib/api.ts`: localhost-only host check, JSON content type, same-origin check, zod validation [W] |
 | SQLite for state and audit | ✅ | `database.py`, 12 tables [T][UI] |
-| One start command `streamlit run app.py` | ✅ | README; `start_windows.bat` [UI] |
-| `unittest` tests | ✅ | `test_project.py`, 53 tests [T] |
+| Runnable with `npm install` + `npm run dev` | ✅ | README; `npm run setup:python` installs the engine once; `predev` checks it [W] |
+| `unittest` tests | ✅ | `engine/test_project.py`, 58 tests incl. 5 bridge tests; `npm test` also type-checks the web app [T] |
 | No venvs, credentials or caches in the submission | ✅ | `reporting.package` excludes data caches, logs, candidates and `.tmp` files |
 
 ## Core behaviour (O1, O3)
@@ -115,7 +119,7 @@ Verification codes:
 
 | Deliverable | Status |
 |---|---|
-| Source, `requirements.txt`, `settings.example.json`, README, `start_windows.bat` | ✅ |
+| Source, `package.json`, `engine/requirements.txt`, `engine/settings.example.json`, README | ✅ |
 | ARCHITECTURE (Mermaid diagrams), METHODOLOGY, DATASETS, DEMO_GUIDE, this checklist | ✅ |
 | Benchmark CSV/JSON and charts | ✅ `results_*`, `results_full_*` |
 | RESEARCH_REPORT with verified references | ✅ (verification status per reference) |

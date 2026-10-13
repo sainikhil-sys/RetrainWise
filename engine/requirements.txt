@@ -1,0 +1,11 @@
+# RetrainWise Python engine - pinned, CPU-only dependencies (Python 3.10-3.12).
+# The web interface is the Next.js app in the project root; this engine has no web framework.
+numpy==2.2.6
+pandas==2.2.3
+scipy==1.15.3
+scikit-learn==1.6.1
+joblib==1.5.1
+matplotlib==3.10.3
+python-pptx==1.0.2
+# Optional: used only by tests to cross-check the built-in ADWIN implementation.
+river==0.22.0
