@@ -1,7 +1,7 @@
 # RetrainWise: a lifecycle-aware agent for cost-benefit training decisions
 
 **Research report.** All numbers come from `results_*.csv` / `results_full_*.csv` produced by
-`experiments.py` in this folder on 2026-10-12. Dollar figures are **simulated** under the assumed cost model in
+`experiments.py` (now in `engine/`) on 2026-10-12. Dollar figures are **simulated** under the assumed cost model in
 `pricing_snapshot.json`. They show relative behaviour, not real savings.
 
 ## Abstract

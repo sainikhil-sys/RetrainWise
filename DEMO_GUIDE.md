@@ -1,46 +1,41 @@
 # Demonstration guide (about 10 minutes, fully offline)
 
-The interface guides you: every page starts with a one-line purpose and an **ℹ️ How it works** button,
-a step tracker shows where you are in the cycle, and a **Next step** box (with a *Go →* button) always points to the most
-useful action. Technical tables and raw records are in expanders. The sidebar has a **📖 Glossary**.
-
 This script walks the required flow:
 
 **select data → process batches → inspect monitoring → obtain a recommendation → approve an update →
 validate and promote or reject → inspect registry and audit → run a benchmark → export results**
 
-Every step below was carried out in the running application during development (2026-10-12).
-The numbers shown are what that walkthrough produced with seed 42. Other seeds or settings give different numbers.
+The walkthrough numbers below were produced with seed 42 on 2026-10-12 (with the earlier Streamlit interface, which the
+Next.js dashboard replaced; the engine and its numbers are unchanged). Other seeds or settings give different numbers.
 
 ## 0. Start
 
-Run `start_windows.bat`, or `streamlit run app.py`, then open <http://localhost:8501>.
-For a clean start, stop the app and delete `retrainwise.db*` and `model_v*.joblib`.
+Run `npm install`, `npm run setup:python` (once) and `npm run dev`, then open <http://localhost:3000>.
+For a clean start, stop the app and delete `engine/retrainwise.db*` and `engine/model_v*.joblib`.
 
 ## 1. Select data
 
-* **Overview → Start the offline demo** creates run *synthetic · standard · seed 42*
+* **Overview → Start offline demo (synthetic drift stream)** creates run *synthetic · standard · seed 42*
   (20,000 rows) and trains `v001` on rows 0–999.
-* Alternatively, open **Data and simulation**, choose a dataset, size and seed, then **Start a new run on …**. This tab shows the
+* Alternatively, open **Data & simulation**, choose a dataset, size and seed, then **Start stream**. This tab shows the
   provenance record, the schema preview and the synthetic drift points (abrupt at 4,000, gradual 8,000–12,000,
   recurring at 14,000, covariate-only from 17,000).
 
 ## 2. Process batches
 
-On **Data and simulation**, press **▶ Next 5** and then **▶ Next batch** a few times (9 batches in total). The stream passes the abrupt
-drift at row 4,000. Each click shows a one-line summary of what happened. Clicking twice cannot double-process:
-every call carries the expected stream position. The **Next step** box tells you when an update check is worth doing.
+On **Data & simulation**, set *Batches to process* to **9** and press **Process 9 batches**. The stream passes the abrupt
+drift at row 4,000. Pressing the button twice cannot double-process: every call carries the expected stream position.
 
 ## 3. Inspect monitoring
 
-Open **Monitoring**. The three summary cards read **Prediction quality: Accuracy dropping**, **Input data: Looks familiar**, and the outcome count.
+Open **Monitoring**. The status badges read **predictive degradation**, *no covariate signal*, and *predictive signal*.
 The rolling error rises from about 0.12 to 0.6 while the PSI heatmap stays quiet. This is concept drift without
-covariate shift. The *🚨 Alarms & staleness* tab shows ADWIN and DDM alarms and growing learning debt.
-*🏷️ Outcomes & reference* shows the fixed PSI bins of the training window.
+covariate shift. The *Detectors & staleness* tab shows ADWIN and DDM alarms and growing learning debt.
+*Labels & reference* shows the fixed PSI bins of the training window.
 
 ## 4. Obtain a recommendation
 
-Open **Decision analysis** and press **⚖ Evaluate options now**. In the walkthrough:
+Open **Decision analysis** and press **Evaluate update options**. In the walkthrough:
 
 * ADWIN placed the change point at **row 4,000** (the true drift point), so full retraining used the post-change window.
 * Hold-out error was 0.656 for the incumbent and 0.144 for the full candidate, on 450 labels.
@@ -53,7 +48,7 @@ Review the itemised cost bars, benefit intervals, the guardrail table, the sensi
 
 Open **Model lifecycle**.
 
-1. Press **Approve and run checks** without ticking the box. The form refuses ("Tick the approval box…").
+1. Press **Approve and execute** without a name or without ticking the box. The form refuses ("Tick the box to confirm your approval.").
 2. Enter an approver name, tick the approval box and execute.
 3. The guardrails are re-checked, the artifact checksum is verified, and the hold-out comparison is recomputed.
    The outcome is **promoted as v002**.
@@ -68,7 +63,7 @@ Open **Model lifecycle**.
   * Partial update: net $45.22, P = 0.82. **Recommended.**
 
   Approving the partial update promoted **v003**, a genuine `partial_fit` update.
-* **Rollback**: choose v002, give a reason, tick approval, and press **Roll back** (under *↩ Roll back to an earlier version*). The registry shows v003 as `rolled_back`.
+* **Rollback**: choose v002, give a reason, tick approval, and press **Roll back**. The registry shows v003 as `rolled_back`.
 * To see a validation rejection, approve an action that is blocked by guardrails (for example *Full retraining* above).
   The outcome is *rejected: blocked by guardrails*. Validation-gate rejections also occur in the benchmarks
   (13 across the RetrainWise runs).
@@ -76,21 +71,21 @@ Open **Model lifecycle**.
 ## 7. Inspect registry and audit
 
 * **Model lifecycle → Registry** lists versions, artifacts, SHA-256 prefixes, training intervals, reference errors and approvers.
-* **Agent and audit**:
-  * Press **🤖 Explain the latest decision** in *Template (no AI)* style for a deterministic explanation (labelled "no language model used"), with its tool evidence table.
+* **Agent & audit**:
+  * Generate a **deterministic** explanation (labelled "no language model used"), with its tool evidence table.
   * Optionally switch to **Local Ollama** (for example `llama3.1:latest`). The agent can only read evidence and *prepare* requests.
   * Filter the audit log by event kind and export it as JSON.
 
 ## 8. Run a benchmark and export results
 
 Open **Experiments** and keep the defaults (synthetic, all six policies, balanced, small, seeds 1,2). Press
-**Start comparison**. A worker process runs 12 runs (about 17 seconds in the walkthrough) while the panel shows
+**Start benchmark**. A worker process runs 12 runs (about 17 seconds in the walkthrough) while the panel shows
 progress, with a **Cancel** button.
 
-Then choose a result set under *Saved comparisons*. The submission set `results` has 216 runs. Use the
-**Export summary CSV / aggregate CSV / details JSON** buttons.
+Then choose a result set under *Results*. The submission set `results` has 216 runs. Use the
+**Summary CSV / Aggregate CSV / Details JSON** buttons.
 
 ## 9. Restart test
 
-Stop the server and start it again. The active run, position, active model version, spend, decisions and audit log
+Stop `npm run dev` and start it again. The active run, position, active model version, spend, decisions and audit log
 are all restored from SQLite. Any job or execution that was in flight is marked `interrupted`; nothing is silently resumed.

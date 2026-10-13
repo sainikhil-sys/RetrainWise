@@ -1,11 +1,11 @@
 # Datasets: provenance, ordering and preprocessing
 
-All three real datasets were downloaded by `python datasets.py electricity covertype airlines` on
+All three real datasets were downloaded by `python datasets.py electricity covertype airlines` (now `engine/datasets.py`) on
 **2026-10-12** (UTC). Each `data_<name>_provenance.json` file records the exact values below plus column types,
 class counts and missing-value counts. The cached CSVs are excluded from the submission ZIP; regenerate them with:
 
 ```bash
-python datasets.py electricity airlines covertype
+python engine/datasets.py electricity airlines covertype
 ```
 
 A re-download may produce different checksums if the source files change. The provenance file records what was

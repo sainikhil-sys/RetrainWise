@@ -1,18 +1,23 @@
 # Architecture
 
 RetrainWise implements the proposal's four layers (monitoring, decision, orchestration and action) as Python modules
-inside one Streamlit process, plus one optional worker process for long experiments.
-SQLite (`retrainwise.db`, WAL mode) is the single source of truth.
+in `engine/`. A Next.js (App Router, TypeScript) dashboard in the project root is the only user interface. It talks to
+the engine through a JSON bridge (`engine/bridge.py`) that runs as one long-lived Python process, plus one worker
+process per benchmark job. SQLite (`engine/retrainwise.db`, WAL mode) is the single source of truth.
 
 ## Component diagram
 
 ```mermaid
 flowchart TB
-  subgraph UI["Streamlit app (app.py) - only application framework"]
-    T1[Overview] --- T2[Data & simulation] --- T3[Monitoring] --- T4[Decision analysis]
-    T5[Model lifecycle] --- T6[Experiments] --- T7[Agent & audit] --- T8[Settings]
+  subgraph WEB["Next.js app (src/) - TypeScript, App Router, Tailwind"]
+    P1[Overview] --- P2[Data & simulation] --- P3[Monitoring] --- P4[Decision analysis]
+    P5[Model lifecycle] --- P6[Experiments] --- P7[Agent & audit] --- P8[Settings]
+    API["API routes /api/*<br/>local-only guard, zod validation"]
+    ENG["src/lib/engine.ts<br/>process manager, command queue,<br/>timeouts, duplicate detection"]
+    RO["src/lib/db.ts<br/>better-sqlite3 read-only"]
   end
-  subgraph Core["Library modules (same process)"]
+  subgraph Core["Python engine (engine/)"]
+    BR[bridge.py<br/>allow-listed JSON commands]
     DS[datasets.py<br/>download, cache, provenance,<br/>synthetic drift stream]
     PP[preprocessing.py<br/>schema alignment,<br/>window-only fitting]
     MON[monitoring.py  L1<br/>PSI, ADWIN, DDM, metrics,<br/>learning debt, trigger]
@@ -25,8 +30,12 @@ flowchart TB
   ART[[model_vNNN.joblib<br/>SHA-256 in registry]]
   W[worker.py process<br/>experiments.py harness]
   OL[(Ollama :11434<br/>optional)]
-  UI --> PL & AG & DS
-  UI -- submit/cancel --> J[jobs.py] --> DB
+  P1 & P2 & P3 & P4 & P5 & P6 & P7 & P8 -- server components --> RO --> DB
+  P2 & P4 & P5 & P6 & P7 & P8 -- fetch --> API --> ENG
+  ENG -- "stdin/stdout JSON lines (serve)" --> BR
+  ENG -- "one-shot: downloads, Ollama" --> BR
+  BR --> PL & AG & DS
+  BR -- submit/cancel --> J[jobs.py] --> DB
   J -- spawn --> W --> DB
   PL --> MON & MOD & ECO & DS
   MOD --> PP
@@ -36,6 +45,25 @@ flowchart TB
   AG -- HTTP urllib --> OL
   AG --> DB
 ```
+
+## Web layer
+
+* **Reads** never touch Python: server components query SQLite through a read-only `better-sqlite3` connection.
+  If the database does not exist yet, the engine is started once to create the schema and default settings.
+* **Actions** are `POST`/`PUT` API routes. Each validates its JSON body with zod, then calls `engineCall(command, args)`.
+  The engine process handles one command at a time, so batches, evaluations, executions, rollbacks and settings
+  changes can never interleave. A per-action key (for example `execute:<decision>`) rejects a second identical request
+  with HTTP 409 while the first is queued or running.
+* **Slow commands** (`download_dataset`, Ollama `explain`) run in a separate `bridge.py call <command>` process with
+  their own timeout, so the dashboard stays responsive.
+* **Errors** from the engine carry a kind (`invalid`, `conflict`, `forbidden`, `not_found`, `internal`) that maps to
+  HTTP 400/409/403/404/500. Unexpected engine exceptions are also written to the audit log as `bridge_error`.
+* **Timeouts and crashes**: a command that exceeds its timeout kills the engine process; the next command starts a new
+  one, which first runs recovery (executions left in `executing` become `interrupted`).
+* **Security**: the API only answers requests addressed to `localhost`/`127.0.0.1`/`[::1]`; state-changing requests
+  must be `application/json` and same-origin. Python is spawned without a shell, with a fixed script path, and the
+  bridge accepts only allow-listed command names with validated arguments. Export routes serve only files matching
+  `<prefix>_{summary.csv,aggregate.csv,details.json,chart_*.png}` directly inside `engine/`.
 
 ## Decision workflow (one batch to one action)
 
@@ -113,11 +141,11 @@ flowchart LR
 
 ## Long-running work and restarts
 
-* Streamlit reruns never start work implicitly. Buttons call idempotent functions:
+* Page renders never start work implicitly. Buttons call idempotent functions:
   `process_batch(expected_position)`, `evaluate` (keyed decision), and `execute` (UNIQUE approval).
 * Benchmarks run in `worker.py` (`subprocess.Popen`, same folder). The worker claims a `queued` job once, writes a
   heartbeat every 5 seconds, checks the cancel flag between runs, and records `completed`, `cancelled` or `failed`.
-* On application start, `jobs.recover` marks jobs whose heartbeat is older than 45 seconds as `interrupted`, and
+* When the engine process starts (and whenever the jobs list is read), `jobs.recover` marks jobs whose heartbeat is older than 45 seconds as `interrupted`, and
   `Lifecycle.recover` marks decisions left in `executing` as `interrupted`. **Nothing is resumed automatically**:
   jobs and executions must be resubmitted. Run state (position, models, decisions) is fully persisted, so the
   stream itself continues from where it stopped.
