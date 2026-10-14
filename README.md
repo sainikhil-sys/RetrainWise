@@ -42,6 +42,38 @@ streamlit run app.py
 
 (On Windows, use `%USERPROFILE%\.venvs\retrainwise\Scripts\python.exe`. Activate the environment before running `streamlit`.)
 
+## Accounts and email
+
+The app opens on a sign-in screen. New users create an account, receive a **6-digit code by email**,
+verify it, and are signed in. **Forgot password?** emails a reset code. Approvals and rollbacks are
+recorded in the audit log under the signed-in email.
+
+Email is sent over SMTP. Copy `.env.example` to `.env`, fill in your provider's settings, restart the
+app, then confirm delivery from a terminal before testing sign-up:
+
+```bash
+python auth.py --check
+```
+
+```bash
+python auth.py --test-email you@example.com
+```
+
+`--check` flags known misconfigurations; `--test-email` sends a real message and prints the exact
+SMTP failure if it cannot (rejected login, refused recipient, wrong port/security mode, timeout).
+The sign-up screen shows the same reason instead of failing silently. Common causes of missing mail:
+
+- **Gmail** rejects your normal password. Turn on 2-Step Verification, create an App Password
+  (myaccount.google.com/apppasswords) and use it as `SMTP_PASSWORD`.
+- **Port and security must match**: 587 with `SMTP_SECURITY=starttls`, 465 with `SMTP_SECURITY=ssl`.
+- **`SMTP_FROM` must be an address the provider lets you send as** (your login for Gmail/Outlook,
+  a verified sender for SendGrid/Mailgun/SES).
+- Delivered mail can land in **spam/junk**.
+
+Codes expire after 10 minutes, allow 5 attempts, and can be resent once a minute (5 per hour).
+Five wrong passwords lock the account for 15 minutes. Passwords are stored as scrypt hashes.
+For offline development only, `AUTH_DEV_CODES=1` with no `SMTP_HOST` shows codes on screen.
+
 ## Real datasets (explicit download, never substituted)
 
 ```bash
@@ -108,6 +140,8 @@ labelled deterministic explanation mode is used.
 | File | Role |
 |---|---|
 | `app.py` | Streamlit UI (the only application framework) |
+| `auth.py`, `auth_ui.py` | Accounts, emailed verification/reset codes, SMTP delivery and diagnostics; sign-in screens |
+| `.env.example` | SMTP settings template (copy to `.env`) |
 | `config.py` | Validated settings, sample sizes, safe file names |
 | `database.py` | SQLite schema, transactions, audit events, JSON-lines log |
 | `datasets.py` | Downloads, caching, provenance, synthetic drift stream |

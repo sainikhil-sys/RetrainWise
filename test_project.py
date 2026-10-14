@@ -4,8 +4,11 @@ from __future__ import annotations
 import copy
 import json
 import math
+import base64
 import shutil
+import socketserver
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 import agent
+import auth
 import jobs
 import pipeline
 import worker
@@ -703,6 +707,224 @@ class JobTests(TempDirCase):
                     {"datasets": ["electricity"]}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 jobs.validate_payload({**self.payload, **bad}, self.dir)
+
+
+class _FakeSMTP(socketserver.StreamRequestHandler):
+    """Minimal SMTP server (EHLO, AUTH PLAIN/LOGIN, MAIL, RCPT, DATA) for delivery tests."""
+
+    def reply(self, line):
+        self.wfile.write((line + "\r\n").encode())
+
+    def handle(self):
+        server = self.server
+        self.reply("220 fake ESMTP")
+        while True:
+            line = self.rfile.readline().decode().rstrip("\r\n")
+            if not line:
+                return
+            verb = line.split(" ", 1)[0].upper()
+            if verb in ("EHLO", "HELO"):
+                self.reply("250-fake")
+                self.reply("250 AUTH PLAIN LOGIN")
+            elif verb == "AUTH":
+                parts = line.split()
+                if parts[1].upper() == "PLAIN":
+                    creds = base64.b64decode(parts[2]).split(b"\0")[1:]
+                else:
+                    self.reply("334 VXNlcm5hbWU6")
+                    user = base64.b64decode(self.rfile.readline().strip())
+                    self.reply("334 UGFzc3dvcmQ6")
+                    creds = [user, base64.b64decode(self.rfile.readline().strip())]
+                ok = [c.decode() for c in creds] == [server.user, server.password]
+                self.reply("235 ok" if ok else "535 5.7.8 bad credentials")
+            elif verb in ("MAIL", "RSET", "NOOP"):
+                self.reply("250 ok")
+            elif verb == "RCPT":
+                self.reply("550 no such user" if "reject" in line else "250 ok")
+            elif verb == "DATA":
+                self.reply("354 go")
+                body = []
+                while (chunk := self.rfile.readline().decode()) not in (".\r\n", ""):
+                    body.append(chunk)
+                server.messages.append("".join(body))
+                self.reply("250 queued")
+            elif verb == "QUIT":
+                self.reply("221 bye")
+                return
+            else:
+                self.reply("502 unknown")
+
+
+class AuthTests(TempDirCase):
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+        self.mail = auth.MailSettings(host="smtp.test", user="bot@test.io", password="pw", sender="bot@test.io")
+        self.auth = auth.Auth(Database(self.dir / "t.db"), self.mail, sender=self.capture)
+
+    def capture(self, to, subject, text, html=None, cfg=None):
+        self.sent.append((to, subject, text))
+
+    def last_code(self):
+        return next(w for w in self.sent[-1][2].split() if w.isdigit() and len(w) == 6)
+
+    def age_codes(self, seconds=120):
+        old = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        with self.auth.db.transaction() as c:
+            c.execute("UPDATE auth_codes SET created=?", (old,))
+
+    def test_password_hashing(self):
+        stored = auth.hash_password("s3cret-pass")
+        self.assertNotIn("s3cret-pass", stored)
+        self.assertTrue(auth.verify_password("s3cret-pass", stored))
+        self.assertFalse(auth.verify_password("wrong-pass1", stored))
+        self.assertFalse(auth.verify_password("x", "garbage"))
+
+    def test_signup_verify_login(self):
+        self.auth.register("Ada", "Ada@Example.com ", "pass-word1", "pass-word1")
+        self.assertEqual(self.sent[0][0], "ada@example.com")
+        with self.assertRaises(auth.UnverifiedEmail):
+            self.auth.login("ada@example.com", "pass-word1")
+        with self.assertRaises(auth.AuthError):
+            self.auth.verify_email("ada@example.com", "000000" if self.last_code() != "000000" else "111111")
+        user = self.auth.verify_email("ada@example.com", self.last_code())
+        self.assertTrue(user["verified"])
+        self.assertEqual(self.auth.login("ADA@example.com", "pass-word1")["name"], "Ada")
+        with self.assertRaises(auth.AuthError):
+            self.auth.register("Ada", "ada@example.com", "pass-word1", "pass-word1")
+
+    def test_validation_errors(self):
+        for args in (("", "a@b.co", "pass-word1", "pass-word1"), ("A", "not-an-email", "pass-word1", "pass-word1"),
+                     ("A", "a@b.co", "short1", "short1"), ("A", "a@b.co", "pass-word1", "pass-word2"),
+                     ("A", "a@b.co", "onlyletters", "onlyletters")):
+            with self.subTest(args=args), self.assertRaises(auth.AuthError):
+                self.auth.register(*args)
+        self.assertEqual(self.sent, [])
+
+    def test_code_is_single_use_and_replaced_by_resend(self):
+        self.auth.register("Bo", "bo@test.io", "pass-word1", "pass-word1")
+        first = self.last_code()
+        with self.assertRaises(auth.AuthError):       # resend cooldown
+            self.auth.send_code("bo@test.io", "verify")
+        self.age_codes()
+        self.auth.send_code("bo@test.io", "verify")
+        second = self.last_code()
+        if first != second:
+            with self.assertRaises(auth.AuthError):
+                self.auth.verify_email("bo@test.io", first)
+        self.auth.verify_email("bo@test.io", second)
+        with self.assertRaises(auth.AuthError):
+            self.auth.verify_email("bo@test.io", second)
+
+    def test_code_expiry_and_attempt_limit(self):
+        self.auth.register("Cy", "cy@test.io", "pass-word1", "pass-word1")
+        code = self.last_code()
+        wrong = "123456" if code != "123456" else "654321"
+        for _ in range(auth.CODE_MAX_ATTEMPTS):
+            with self.assertRaises(auth.AuthError):
+                self.auth.verify_email("cy@test.io", wrong)
+        with self.assertRaises(auth.AuthError):         # locked out even with the right code
+            self.auth.verify_email("cy@test.io", code)
+        self.age_codes()
+        self.auth.send_code("cy@test.io", "verify")
+        with self.auth.db.transaction() as c:
+            c.execute("UPDATE auth_codes SET expires=?", ("2000-01-01T00:00:00+00:00",))
+        with self.assertRaisesRegex(auth.AuthError, "expired"):
+            self.auth.verify_email("cy@test.io", self.last_code())
+
+    def test_login_lockout(self):
+        self.auth.register("Di", "di@test.io", "pass-word1", "pass-word1")
+        self.auth.verify_email("di@test.io", self.last_code())
+        for _ in range(auth.MAX_FAILED_LOGINS):
+            with self.assertRaisesRegex(auth.AuthError, "Incorrect"):
+                self.auth.login("di@test.io", "wrong-pass1")
+        with self.assertRaisesRegex(auth.AuthError, "Too many"):
+            self.auth.login("di@test.io", "pass-word1")
+        with self.assertRaisesRegex(auth.AuthError, "Incorrect"):
+            self.auth.login("nobody@test.io", "pass-word1")
+
+    def test_password_reset(self):
+        self.auth.register("Ed", "ed@test.io", "pass-word1", "pass-word1")
+        self.auth.verify_email("ed@test.io", self.last_code())
+        self.assertIsNone(self.auth.request_reset("ghost@test.io"))
+        self.auth.request_reset("ed@test.io")
+        self.assertIn("reset", self.sent[-1][1])
+        with self.assertRaises(auth.AuthError):
+            self.auth.reset_password("ed@test.io", self.last_code(), "new-pass1", "different1")
+        self.auth.reset_password("ed@test.io", self.last_code(), "new-pass1", "new-pass1")
+        with self.assertRaises(auth.AuthError):
+            self.auth.login("ed@test.io", "pass-word1")
+        self.assertEqual(self.auth.login("ed@test.io", "new-pass1")["email"], "ed@test.io")
+        self.auth.change_password("ed@test.io", "new-pass1", "third-pass1", "third-pass1")
+        with self.assertRaises(auth.AuthError):
+            self.auth.change_password("ed@test.io", "new-pass1", "x-pass-123", "x-pass-123")
+        self.auth.login("ed@test.io", "third-pass1")
+
+    def test_mail_failure_surfaces_and_stores_no_code(self):
+        def broken(*a, **k):
+            raise auth.MailError("The SMTP server rejected the username/password (535).")
+        self.auth._send = broken
+        with self.assertRaisesRegex(auth.MailError, "rejected"):
+            self.auth.register("Fi", "fi@test.io", "pass-word1", "pass-word1")
+        self.assertIsNotNone(self.auth.user("fi@test.io"))     # account kept so "Resend code" works
+        self.assertEqual(self.auth.db.query("SELECT * FROM auth_codes"), [])
+
+    def test_unconfigured_mail(self):
+        a = auth.Auth(self.auth.db, auth.MailSettings())
+        with self.assertRaises(auth.MailNotConfigured):
+            a.register("Gu", "gu@test.io", "pass-word1", "pass-word1")
+        dev = auth.Auth(self.auth.db, auth.MailSettings(dev_codes=True))
+        self.age_codes()
+        delivery = dev.send_code("gu@test.io", "verify")
+        self.assertFalse(delivery.sent)
+        self.assertTrue(dev.verify_email("gu@test.io", delivery.dev_code)["verified"])
+
+    def test_mail_settings_from_env(self):
+        env = {"SMTP_HOST": "smtp.gmail.com", "SMTP_PORT": "465", "SMTP_USER": "me@gmail.com",
+               "SMTP_PASSWORD": "abcd efgh ijkl mnop"}
+        with mock.patch.dict("os.environ", env, clear=True), mock.patch.object(auth, "load_env_file"):
+            cfg = auth.MailSettings.from_env()
+        self.assertEqual((cfg.security, cfg.password, cfg.sender), ("ssl", "abcdefghijklmnop", "me@gmail.com"))
+        self.assertEqual(cfg.problems(), [])
+        bad = auth.MailSettings(host="smtp.gmail.com", port=465, security="starttls", user="me@gmail.com",
+                                password="normal-password", sender="other@x.com")
+        self.assertEqual(len(bad.problems()), 3)
+
+    def test_env_file(self):
+        path = self.dir / ".env"
+        path.write_text("# comment\nRW_TEST_A='quoted value'\nexport RW_TEST_B=2\nRW_TEST_C=keep\n")
+        with mock.patch.dict("os.environ", {"RW_TEST_C": "real"}, clear=False):
+            auth.load_env_file(path)
+            import os
+            self.assertEqual((os.environ["RW_TEST_A"], os.environ["RW_TEST_B"], os.environ["RW_TEST_C"]),
+                             ("quoted value", "2", "real"))
+            for key in ("RW_TEST_A", "RW_TEST_B"):
+                os.environ.pop(key)
+
+    def test_real_smtp_delivery(self):
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _FakeSMTP)
+        server.daemon_threads = True
+        server.user, server.password, server.messages = "bot@test.io", "pw", []
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            cfg = auth.MailSettings(host="127.0.0.1", port=server.server_address[1], security="none",
+                                    user="bot@test.io", password="pw", sender="Bot <bot@test.io>", timeout=5)
+            a = auth.Auth(self.auth.db, cfg)
+            a.register("Hu", "hu@test.io", "pass-word1", "pass-word1")
+            self.assertEqual(len(server.messages), 1)
+            message = server.messages[0]
+            for header in ("To: hu@test.io", "Subject: Your RetrainWise verification code", "Message-ID:",
+                           "Date:"):
+                self.assertIn(header, message)
+            with self.assertRaisesRegex(auth.MailError, "refused the recipient"):
+                auth.send_email("reject@test.io", "s", "t", cfg=cfg)
+            with self.assertRaisesRegex(auth.MailError, "rejected the username/password"):
+                auth.send_email("hu@test.io", "s", "t", cfg=auth.MailSettings(**{**cfg.__dict__, "password": "no"}))
+        finally:
+            server.shutdown()
+            server.server_close()
+        with self.assertRaisesRegex(auth.MailError, "refused|Timed out|closed"):
+            auth.send_email("hu@test.io", "s", "t", cfg=auth.MailSettings(**{**cfg.__dict__, "timeout": 2}))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ import streamlit as st  # noqa: E402
 
 import jobs  # noqa: E402
 from agent import explain, ollama_status  # noqa: E402
+from auth import Auth  # noqa: E402
+from auth_ui import account_sidebar, require_login  # noqa: E402
 from config import REGIMES, ROOT, SAMPLE_SIZES, Settings  # noqa: E402
 from database import loads  # noqa: E402
 from datasets import (DATASETS, SOURCES, download, is_cached, load, read_provenance,  # noqa: E402
@@ -109,8 +111,15 @@ def lifecycle() -> Lifecycle:
     return life
 
 
+@st.cache_resource
+def authenticator() -> Auth:
+    return Auth(lifecycle().db)
+
+
 life = lifecycle()
 db = life.db
+user = require_login(authenticator())   # renders sign in / sign up and stops until signed in
+ACTOR = user["email"]   # approvals and rollbacks are recorded against the signed-in account
 cfg = life.settings()
 run = life.active_run()
 
@@ -132,6 +141,8 @@ with st.sidebar:
         st.info("No active run. Start one in *Data and simulation*.")
     mode = badge("Bounded autonomy ON", "warn") if cfg.autonomy else badge("Recommendation-only", "good")
     st.markdown(mode, unsafe_allow_html=True)
+    st.divider()
+    account_sidebar(authenticator(), user)
     st.caption("Model training, predictions and metrics are real. Prices, engineer hours and deployment risk "
                "are **simulated assumptions**; deployment is a local registry swap (simulated).")
 
@@ -517,17 +528,16 @@ def page_lifecycle():
                   for r in d["ranked"]}
         with st.form("approve"):
             action = st.radio("Action", options, format_func=lambda a: md(labels[a]), index=0)
-            approver = st.text_input("Approver name", value=st.session_state.get("approver", ""))
+            st.caption(f"Approving as **{ACTOR}**")
             ok = st.checkbox("I approve this action. Guardrails and the validation gate are still enforced.")
             submitted = st.form_submit_button("Execute approved action", type="primary")
         if submitted:
-            if not ok or not approver.strip():
-                st.error("Tick the approval box and enter your name.")
+            if not ok:
+                st.error("Tick the approval box to confirm.")
             else:
-                st.session_state["approver"] = approver
                 try:
                     with st.spinner("Re-checking guardrails, verifying the artifact, validating on the hold-out…"):
-                        result = life.execute(d["id"], action, approver, approved=True)
+                        result = life.execute(d["id"], action, ACTOR, approved=True)
                     st.session_state["flash"] = f"Outcome: {result['status']} - {result['outcome']}"
                     st.rerun()
                 except (LifecycleError, PermissionError) as exc:
@@ -544,19 +554,16 @@ def page_lifecycle():
             c1, c2, c3 = st.columns([4, 1, 1])
             c1.markdown(md(f"Request #{req['id']}: **{ACTION_LABELS[req['action']]}** for decision `{req['decision_id']}`  \n"
                            f"*Rationale:* {req['rationale']}"))
-            name = st.session_state.get("approver", "")
-            if c2.button("Approve", key=f"ar{req['id']}", disabled=not name):
+            if c2.button("Approve", key=f"ar{req['id']}"):
                 try:
-                    result = life.execute(req["decision_id"], req["action"], name, approved=True, request_id=req["id"])
+                    result = life.execute(req["decision_id"], req["action"], ACTOR, approved=True, request_id=req["id"])
                     st.session_state["flash"] = f"Request #{req['id']}: {result['status']} - {result['outcome']}"
                 except (LifecycleError, PermissionError) as exc:
                     st.session_state["flash"] = f"Request #{req['id']} not executed: {exc}"
                 st.rerun()
             if c3.button("Dismiss", key=f"dr{req['id']}"):
-                life.dismiss_request(req["id"], name or "user")
+                life.dismiss_request(req["id"], ACTOR)
                 st.rerun()
-        if not st.session_state.get("approver"):
-            st.caption("Enter an approver name in the approval form once to enable request approval.")
     st.markdown("#### Registry")
     reg = life.registry(run["id"])
     if not reg.empty:
@@ -587,13 +594,13 @@ def page_lifecycle():
     if candidates:
         with st.form("rollback"):
             version = st.selectbox("Restore version", candidates, format_func=lambda v: f"v{v:03d}")
-            who = st.text_input("Approver name", value=st.session_state.get("approver", ""))
+            st.caption(f"Approving as **{ACTOR}**")
             why = st.text_input("Reason")
             ok = st.checkbox("I approve rolling back the active model")
             go_rb = st.form_submit_button("Roll back")
         if go_rb:
             try:
-                life.rollback(int(version), who, approved=ok, reason=why)
+                life.rollback(int(version), ACTOR, approved=ok, reason=why)
                 st.session_state["flash"] = f"Rolled back to v{int(version):03d}."
                 st.rerun()
             except (LifecycleError, PermissionError) as exc:
