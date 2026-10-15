@@ -206,7 +206,7 @@ export function OnboardingFlow({
                   <div className="py-5 text-[13.5px] leading-relaxed">
                     <div className="font-medium">The ML engine is not connected yet</div>
                     <p className="mt-1 text-ink-2">You can finish setting up your workspace now. Streams, training and decisions become available as soon as the engine is connected.</p>
-                    <p className="mt-1 text-[12px] text-muted-foreground">{engineError}</p>
+                    {!/not connected/i.test(engineError) && <p className="mt-1 text-[12px] text-muted-foreground">{engineError}</p>}
                   </div>
                 )}
                 {!datasets && !engineError && (
