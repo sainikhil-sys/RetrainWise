@@ -55,8 +55,10 @@ export type Settings = {
   budget: number;
   calendar_every_batches: number;
   oracle_max_checkpoints: number;
-  agent_mode: "deterministic" | "ollama";
+  agent_mode: "deterministic" | "ollama" | "openai";
   ollama_model: string;
+  llm_base_url: string;
+  llm_model: string;
   agent_timeout_seconds: number;
   agent_max_iterations: number;
   autonomy: boolean;

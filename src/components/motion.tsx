@@ -8,6 +8,10 @@ import { useRef, type ElementType, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
+// Reveals hide content until they finish, so they must run on wall-clock time:
+// without this, a throttled tab (few frames per second) stretches a 0.8 s wipe
+// to many seconds and charts look empty.
+gsap.ticker.lagSmoothing(0);
 
 const MOTION_OK = "(prefers-reduced-motion: no-preference)";
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { body, ident, route } from "@/lib/api";
 import { ACTION_LABELS } from "@/lib/catalog";
 import { notify } from "@/lib/notify";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,14 @@ export const POST = route<{ id: string }>(
       body: `${ctx.user.email} requested this for decision ${decisionId}: ${b.rationale}`,
       href: "/lifecycle",
       dedupeKey: `request:${r.request_id}`,
+    });
+    reportFor(ctx, {
+      kind: "approval_requested",
+      title: `Approval requested: ${ACTION_LABELS[b.action]}`,
+      summary: "Approvers in this workspace were notified. Nothing changes in production until one of them accepts.",
+      status: { label: "Awaiting approval", tone: "warn" },
+      facts: [["Decision", decisionId], ["Request", `#${r.request_id}`], ["Action", ACTION_LABELS[b.action]], ["Rationale", b.rationale]],
+      href: "/decisions",
     });
     return r;
   },

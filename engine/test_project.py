@@ -1024,5 +1024,61 @@ class BridgeTests(TempDirCase):
         self.assertEqual(lines[2]["kind"], "invalid")
 
 
+class OpenSourceProviderTests(unittest.TestCase):
+    """OpenAI-compatible provider (open-source models on Groq/OpenRouter/LM Studio...)."""
+
+    def test_message_conversion_links_tool_results(self):
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"function": {"name": "get_action_evaluations", "arguments": {}}},
+                    {"id": "x1", "function": {"name": "get_probe_results", "arguments": {"limit": 3}}}]},
+                {"role": "tool", "tool_name": "get_action_evaluations", "content": "{}"},
+                {"role": "tool", "tool_name": "get_probe_results", "content": "[]"}]
+        out = agent._openai_messages(msgs)
+        calls = out[2]["tool_calls"]
+        self.assertEqual(calls[0]["type"], "function")
+        self.assertEqual(json.loads(calls[1]["function"]["arguments"]), {"limit": 3})
+        self.assertEqual([m["tool_call_id"] for m in out[3:]], [calls[0]["id"], "x1"])
+
+    def test_provider_round_trip_against_local_endpoint(self):
+        import http.server
+        import threading
+        seen = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen["auth"] = self.headers.get("Authorization")
+                seen["model"] = body["model"]
+                reply = {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "get_action_evaluations", "arguments": "{}"}}]}}]}
+                data = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            call = agent.openai_provider(f"http://127.0.0.1:{server.server_port}/v1", "llama-3.3-70b-versatile",
+                                         deadline=__import__("time").monotonic() + 30, api_key="test-key")
+            msg = call([{"role": "user", "content": "hi"}], agent._tool_list())
+        finally:
+            server.shutdown()
+        self.assertEqual(seen, {"auth": "Bearer test-key", "model": "llama-3.3-70b-versatile"})
+        self.assertEqual(msg["tool_calls"][0]["function"], {"name": "get_action_evaluations", "arguments": {}})
+
+    def test_settings_validate_endpoint(self):
+        s = Settings()
+        s.llm_base_url = "ftp://nope"
+        with self.assertRaises(ValueError):
+            s.validate()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

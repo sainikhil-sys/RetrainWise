@@ -19,6 +19,7 @@ export const GET = route<{ version: string }>(async (req, { version }, ctx) => {
   const format = z.enum(["json", "csv"]).default("json").parse(req.nextUrl.searchParams.get("format") ?? undefined);
   const model = await getModel(ctx.workspace.id, v);
   if (!model) throw new AuthError(404, "Unknown model version");
+  if (ctx.role === "viewer" && (model.status === "candidate" || model.status === "rejected")) throw new AuthError(404, "Unknown model version");
   const events = await getModelEvents(ctx.workspace.id, v);
   await audit({ kind: "model_report_exported", actorEmail: ctx.user.email, actorId: ctx.user.id, workspaceId: ctx.workspace.id, detail: { version: v, format } });
   const name = `retrainwise_model_v${String(v).padStart(3, "0")}`;

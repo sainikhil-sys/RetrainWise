@@ -142,7 +142,7 @@ export default async function OverviewPage() {
                 data={errorSeries(tel)}
                 xKey="row"
                 xLabel="row"
-                xFormat={(x) => `${Math.round(x / 1000)}k`}
+                xFormat="thousands"
                 yFormat="pct"
                 height={320}
                 band={{ key: "ci", name: "95% interval" }}

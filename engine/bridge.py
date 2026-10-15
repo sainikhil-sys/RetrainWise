@@ -43,6 +43,7 @@ _WS = re.compile(r"^[a-z0-9]{8,40}$")
 _ID = re.compile(r"^[A-Za-z0-9]{1,32}$")
 _PREFIX = re.compile(r"^[A-Za-z0-9_]{1,80}$")
 _MODEL_TAG = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
+_MODEL_ID = re.compile(r"^[A-Za-z0-9._:/@-]{1,120}$")
 
 
 class BadRequest(ValueError):
@@ -319,10 +320,11 @@ def cmd_explain(args: dict) -> dict:
     d = lc.decision(_ident(args, "decision_id"))
     if d is None:
         raise LifecycleError("Unknown decision")
-    mode = _choice(args, "mode", ("deterministic", "ollama"))
-    model = args.get("model") or lc.settings().ollama_model
-    if not isinstance(model, str) or not _MODEL_TAG.match(model):
-        raise BadRequest("model must be a short Ollama model tag such as llama3.1")
+    mode = _choice(args, "mode", ("deterministic", "ollama", "openai"))
+    settings = lc.settings()
+    model = args.get("model") or (settings.llm_model if mode == "openai" else settings.ollama_model)
+    if not isinstance(model, str) or not _MODEL_ID.match(model):
+        raise BadRequest("model must be a model id such as llama3.1 or llama-3.3-70b-versatile")
     result = explain(lc, d, mode=mode, model=model)
     return {k: result[k] for k in ("report_id", "mode", "status", "iterations", "duration_seconds", "error",
                                    "requests_prepared")}
@@ -330,6 +332,22 @@ def cmd_explain(args: dict) -> dict:
 
 def cmd_ollama_status(args: dict) -> dict:
     return ollama_status()
+
+
+def cmd_llm_status(args: dict) -> dict:
+    """Both providers' status plus the open-source catalog (never the API key)."""
+    from agent import OLLAMA_CATALOG, OPENAI_PRESETS, openai_status
+    s = life().settings()
+    return {"ollama": ollama_status(), "openai": {"base_url": s.llm_base_url, "model": s.llm_model, **openai_status(s.llm_base_url)},
+            "catalog": OLLAMA_CATALOG, "presets": OPENAI_PRESETS, "mode": s.agent_mode, "ollama_model": s.ollama_model}
+
+
+def cmd_ollama_pull(args: dict) -> dict:
+    from agent import ollama_pull
+    model = args.get("model")
+    if not isinstance(model, str) or not _MODEL_TAG.match(model):
+        raise BadRequest("model must be an Ollama tag such as llama3.1:8b")
+    return ollama_pull(model)
 
 
 def cmd_submit_job(args: dict) -> dict:
@@ -545,7 +563,7 @@ COMMANDS = {
     "submit_job": cmd_submit_job, "cancel_job": cmd_cancel_job, "recover_jobs": cmd_recover_jobs,
     "experiment_sets": cmd_experiment_sets, "experiment_results": cmd_experiment_results,
     "experiment_traces": cmd_experiment_traces, "pricing": cmd_pricing, "catalog": cmd_catalog,
-    "submit_training": cmd_submit_training, "training_options": cmd_training_options,
+    "submit_training": cmd_submit_training, "llm_status": cmd_llm_status, "ollama_pull": cmd_ollama_pull, "training_options": cmd_training_options,
     "revalidate_candidate": cmd_revalidate_candidate, "review_candidate": cmd_review_candidate,
     "promote_candidate": cmd_promote_candidate, "create_request": cmd_create_request,
     "reject_request": cmd_reject_request, "delete_job": cmd_delete_job, "result_file": cmd_result_file,

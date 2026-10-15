@@ -12,7 +12,7 @@ export const WORKSPACE_COOKIE = "rw_ws";
 export type WorkspaceSummary = { id: string; name: string; slug: string; role: Role };
 
 export type Ctx = {
-  user: { id: string; email: string; name: string | null; dismissedTips: string[] };
+  user: { id: string; email: string; name: string | null; dismissedTips: string[]; profileCompleted: boolean };
   workspace: { id: string; name: string; slug: string; onboardedAt: Date | null; defaultRegime: string; requireSeparateApprover: boolean };
   role: Role;
   workspaces: WorkspaceSummary[];
@@ -36,7 +36,7 @@ export async function currentUser() {
 export async function getContext(): Promise<{ status: "anonymous" } | { status: "no-workspace"; user: Ctx["user"] } | ({ status: "ok" } & Ctx)> {
   const user = await currentUser();
   if (!user) return { status: "anonymous" };
-  const u = { id: user.id, email: user.email, name: user.name, dismissedTips: user.dismissedTips.split(",").filter(Boolean) };
+  const u = { id: user.id, email: user.email, name: user.name, dismissedTips: user.dismissedTips.split(",").filter(Boolean), profileCompleted: !!user.profileCompletedAt };
   const memberships = await prisma.membership.findMany({
     where: { userId: user.id },
     include: { workspace: true },

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { body, route, sizeEnum } from "@/lib/api";
 import { DATASETS } from "@/lib/catalog";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,25 @@ const Train = z.discriminatedUnion("scope", [
 export const POST = route(
   async (req, _p, ctx) => {
     const b = await body(req, z.object({ config: Train, confirmed: z.literal(true, { message: "Confirm the training scope" }) }));
-    return ctx.engine.call("submit_training", { config: b.config, actor: ctx.user.email }, { timeoutMs: 120_000, dedupeKey: "submit_training" });
+    const r = await ctx.engine.call<{ job_id: string; created: boolean }>("submit_training", { config: b.config, actor: ctx.user.email }, { timeoutMs: 120_000, dedupeKey: "submit_training" });
+    if (r.created) {
+      reportFor(ctx, {
+        kind: "training_queued",
+        title: "Training job queued",
+        summary: "A real training job was queued. You will get another report with exact metrics when it finishes.",
+        status: { label: "Queued", tone: "neutral" },
+        facts: [
+          ["Job", r.job_id],
+          ["Model", b.config.model.type],
+          ["Data", b.config.scope === "run" ? `active stream, last ${b.config.train_window.toLocaleString()} rows` : `${b.config.dataset} · first ${b.config.initial_window.toLocaleString()} rows`],
+          ["Validation split", String(b.config.validation_fraction)],
+          ["Seed", String(b.config.seed)],
+        ],
+        href: "/models",
+        ctaLabel: "Watch progress",
+      });
+    }
+    return r;
   },
   { permission: "model.train", limit: { max: 10, windowMs: 60_000 } },
 );

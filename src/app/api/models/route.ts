@@ -3,4 +3,6 @@ import { getAllModels } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async (_req, _p, ctx) => ({ models: await getAllModels(ctx.workspace.id) }));
+export const GET = route(async (_req, _p, ctx) => ({
+  models: (await getAllModels(ctx.workspace.id)).filter((m) => ctx.role !== "viewer" || (m.status !== "candidate" && m.status !== "rejected")),
+}));

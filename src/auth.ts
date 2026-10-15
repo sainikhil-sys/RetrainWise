@@ -3,14 +3,18 @@ import NextAuth from "next-auth";
 import Resend from "next-auth/providers/resend";
 
 import { audit } from "@/lib/audit";
-import { layout, sendMail } from "@/lib/mail";
+import { codeEmail, mailFrom, sendMail } from "@/lib/mail";
+import { OTP_MINUTES, newOtp } from "@/lib/otp";
 import { prisma } from "@/lib/prisma";
 
 const maxAgeDays = Math.max(1, Math.min(90, Number(process.env.SESSION_MAX_AGE_DAYS) || 7));
 
 /**
- * Email magic-link authentication (Auth.js + Prisma adapter).
- * - First sign-in creates the account; the email is verified by the link itself.
+ * Email one-time-code authentication (Auth.js email provider + Prisma adapter).
+ * - Any email address can sign in: a 6-digit code is emailed and entered on
+ *   /signin/verify. First sign-in creates the account; the code verifies the email.
+ * - Codes expire after OTP_MINUTES, are stored only as a salted hash, are single
+ *   use, and wrong guesses are limited (see src/lib/otp.ts).
  * - Database sessions expire after SESSION_MAX_AGE_DAYS (default 7) and are
  *   refreshed at most daily.
  * - Pending workspace invitations for the email are accepted on sign-in.
@@ -19,19 +23,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   trustHost: true,
   session: { strategy: "database", maxAge: maxAgeDays * 24 * 3600, updateAge: 24 * 3600 },
-  pages: { signIn: "/signin", verifyRequest: "/signin/check-email", error: "/signin/error" },
+  pages: { signIn: "/signin", verifyRequest: "/signin/verify", error: "/signin/error" },
   providers: [
     Resend({
       apiKey: process.env.AUTH_RESEND_KEY || "development-outbox",
-      from: process.env.EMAIL_FROM || "RetrainWise <onboarding@resend.dev>",
-      maxAge: 15 * 60,
-      async sendVerificationRequest({ identifier, url }) {
-        const { text, html } = layout(
-          "Sign in to RetrainWise",
-          ["Use the button below to sign in. The link expires in 15 minutes and can be used once."],
-          { label: "Sign in", url },
-        );
-        await sendMail({ to: identifier, subject: "Your RetrainWise sign-in link", text, html, url });
+      from: mailFrom(),
+      // Pinned so the app can check a code against the stored hash (src/lib/otp.ts).
+      secret: process.env.AUTH_SECRET,
+      maxAge: OTP_MINUTES * 60,
+      generateVerificationToken: newOtp,
+      async sendVerificationRequest({ identifier, token }) {
+        const { text, html } = codeEmail(token, OTP_MINUTES);
+        await sendMail({ to: identifier, subject: `${token} is your RetrainWise sign-in code`, text, html, code: token });
       },
     }),
   ],

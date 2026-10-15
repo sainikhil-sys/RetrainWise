@@ -12,19 +12,21 @@ export const dynamic = "force-dynamic";
 export default async function SignInPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
   const { next } = await searchParams;
   const session = await auth();
-  if (session?.user) redirect(next && next.startsWith("/") ? next : "/overview");
+  if (session?.user) redirect(next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/overview");
   return (
     <AuthFrame>
       <h1 className="font-serif text-[40px] leading-[1.05] tracking-[-0.01em]">Sign in</h1>
-      <p className="mb-8 mt-2 text-[14px] text-ink-2">Use your work email. No password needed.</p>
+      <p className="mb-8 mt-2 text-[14px] text-ink-2">Use any email address. No password needed.</p>
       <SignInForm next={next} />
-      {!mailConfigured() && process.env.NODE_ENV !== "production" && (
+      {process.env.NODE_ENV !== "production" && (
         <p className="mt-8 border-t border-border pt-4 text-[12px] leading-relaxed text-muted-foreground">
-          Development mode: no mail provider is configured, so sign-in emails are delivered to the local outbox at{" "}
+          {mailConfigured()
+            ? "Development mode: if the email does not arrive (for example the mail provider rejects the sender), the code is kept in the local outbox at "
+            : "Development mode: no mail provider is configured, so sign-in codes go to the local outbox at "}
           <a href="/dev/mailbox" className="text-foreground underline underline-offset-4">
             /dev/mailbox
           </a>{" "}
-          (and printed in the terminal). Set <code className="font-mono">AUTH_RESEND_KEY</code> to send real email.
+          and the reason is printed in the terminal.
         </p>
       )}
     </AuthFrame>

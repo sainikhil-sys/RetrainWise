@@ -8,8 +8,10 @@ deployment-risk and probe costs.
 It explains the recommendation, requires explicit approval, validates candidates on a chronological hold-out, promotes
 or rejects them, supports rollback, and keeps a complete audit trail.
 
-The dashboard is a **Next.js (App Router, TypeScript, Tailwind CSS)** application. The machine learning runs in the
-existing **Python lifecycle engine** (`engine/`). **SQLite** (`engine/retrainwise.db`) is the single source of truth.
+The product is a **Next.js 16 (App Router, TypeScript, Tailwind CSS, shadcn/ui)** application with email-code sign-in,
+workspaces and roles. The machine learning runs in the **Python lifecycle engine** (`engine/`). Accounts, sessions and
+the application audit log live in **SQLite via Prisma** (`data/app.db`, PostgreSQL-ready); each workspace's engine
+state lives in its own SQLite database (`engine/workspaces/<id>/retrainwise.db`).
 
 | What is real | What is simulated or assumed (labelled in the UI) |
 |---|---|
@@ -58,80 +60,136 @@ npm run setup:python
 npm run dev
 ```
 
-Open <http://localhost:3000>. On **Overview**, click **Start offline demo (synthetic stream)**, then process a few
-batches. No network connection is needed for the demo.
+Open <http://localhost:3000>, choose **Get started**, enter any email address and type the 6-digit code you receive.
+Without an email provider configured, development builds keep the email in a local outbox at
+<http://localhost:3000/dev/mailbox> (and print the code in the terminal), so you can always sign in locally.
 
-* `npm run setup:python` creates `engine/.venv` and installs `engine/requirements.txt` (it uses `uv` when available,
-  otherwise `python -m venv` + `pip`). You only need it once.
-* `npm run dev` first checks that the engine's Python is ready and prints how to fix it if not. The dashboard still
-  starts; actions report a clear "engine unavailable" error until Python is set up.
-* To use an interpreter you already have, set `RETRAINWISE_PYTHON` to its path instead of running `setup:python`.
-  Interpreter search order: `RETRAINWISE_PYTHON`, `engine/.venv`, `.venv`, `%LOCALAPPDATA%\RetrainWise\venv`
-  (Windows), `~/.venvs/retrainwise`, then `python`/`python3` on `PATH`.
+* `npm run dev` creates `.env` with a fresh `AUTH_SECRET` on first run, applies database migrations and checks that the
+  engine's Python is ready (it prints how to fix it if not).
+* `npm run setup:python` creates `engine/.venv` and installs `engine/requirements.txt` (uses `uv` when available).
+  Interpreter search order: `RETRAINWISE_PYTHON`, `engine/.venv`, `.venv`, `~/.venvs/retrainwise`,
+  `%LOCALAPPDATA%\RetrainWise\venv` (Windows), then `python`/`python3` on `PATH`.
+* Production: `npm run build` then `npm run start`.
 
-Production build: `npm run build` then `npm run start`.
+## First run: sign-in and onboarding
+
+1. **Sign in with a code.** Any email address works. A 6-digit code is emailed; it expires after 10 minutes, works once,
+   allows 5 wrong attempts, and can be resent after 30 seconds. A new address creates an account. Codes are stored only
+   as a salted hash; sign-in requests and code checks are rate limited.
+2. **Profile.** First sign-in asks for name, job title, company, role, what you will monitor and how many models you run.
+3. **Workspace.** New users create a workspace (they become its admin), choose a data stream and a default cost regime,
+   and can start the first monitored model. People invited to a workspace skip straight to the app.
+4. **Dashboard.** Once signed in, opening the app goes to the Overview, never the marketing page. Sessions are
+   database-backed and expire after `SESSION_MAX_AGE_DAYS` (default 7).
+
+## Configuration (`.env`)
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Prisma database. Default `file:../data/app.db` (SQLite). Use a `postgresql://` URL with `provider = "postgresql"` in `prisma/schema.prisma` for PostgreSQL. |
+| `AUTH_SECRET` | Signs sessions and hashes sign-in codes. Generated automatically in development; set a long random value in production. |
+| `AUTH_URL` | Public base URL (used in email links), e.g. `http://localhost:3000`. |
+| `SESSION_MAX_AGE_DAYS` | Session lifetime in days (default 7). |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | Send email through SMTP (for example Gmail with an app password: host `smtp.gmail.com`, port `587`). Used first when set; reaches any address without a verified domain. |
+| `AUTH_RESEND_KEY`, `EMAIL_FROM` | Send email through Resend. Resend delivers to everyone only from a **verified domain**; with its test sender `onboarding@resend.dev` it delivers only to the Resend account owner. If your domain is rejected, the app retries once from the test sender. |
+| `CONTACT_EMAIL` | Where the public contact form delivers messages. |
+| `LLM_API_KEY` | API key for a hosted OpenAI-compatible endpoint serving open-source models (Groq, OpenRouter, Together, Hugging Face). Never stored in the database or shown in the app. |
+| `RETRAINWISE_PYTHON` | Optional path to the engine's Python interpreter. |
+| `RETRAINWISE_ALLOWED_HOSTS` | Extra host names allowed to call the API besides localhost (set when deploying behind a domain). |
+
+## Emails
+
+Every email uses one responsive, branded template (`src/lib/email-template.ts`) with a plain-text twin. Preview them at
+<http://localhost:3000/dev/emails> (development only, nothing is sent).
+
+* **Sign-in code**: large, readable 6-digit code; expiry and security note.
+* **Work reports** (`src/lib/report.ts`): after each action, the person who did it gets a short report with exact
+  figures: stream started, batches processed, evaluation results, approval requested / approved / rejected, model
+  promoted, rolled back or validated, training queued and finished (with metrics), benchmark queued and finished,
+  dataset downloaded, settings changed or reset, team invitations, agent reports, open-source model downloads, welcome
+  and workspace-ready emails. Each user can turn these off under **Profile → Notifications**. Sent reports are logged in
+  the `EmailReport` table, which also prevents duplicates.
+* **Approval requests** to approvers who opted in, and **invitations** to new members.
+
+## Roles
+
+| Role | Can |
+|---|---|
+| Viewer | Read monitoring, decisions, approved model history, reports and experiments |
+| Operator | Run streams and batches, evaluate options, train and validate candidates, run benchmarks, request actions |
+| Approver | Everything an operator can, plus approve or reject updates, promote or reject candidates, roll back |
+| Admin | Everything, plus team and roles, costs, budgets, guardrails, autonomy, agent and workspace settings |
+
+The server enforces every permission. Neither an operator nor the agent can bypass an approval; a workspace can also
+require that one person requests and another approves.
+
+## Open-source models for the agent
+
+The advisory agent explains a decision from stored evidence through read-only tools and can at most prepare a request
+for approval. Choose its model on **Agent & audit**:
+
+* **Deterministic**: no language model (default).
+* **On this computer (Ollama)**: install [Ollama](https://ollama.com/download) (`winget install Ollama.Ollama` on
+  Windows), then download a model from the built-in catalog (Llama 3.2 3B, Llama 3.1 8B, Qwen 2.5 7B, Qwen 3 8B,
+  Granite 3.3 8B, Mistral NeMo 12B). Nothing leaves the machine.
+* **Hosted open-source**: any OpenAI-compatible endpoint, with presets for Groq, OpenRouter, Together AI, Hugging Face,
+  LM Studio and Ollama's `/v1`. Put the key in `LLM_API_KEY`, choose the model (for example `llama-3.3-70b-versatile`)
+  and save it as the default.
+
+Language-model output is always shown next to the deterministic, verified figures, and a consistency check flags a
+report whose recommendation differs from the engine's.
 
 ## How the pieces fit
 
 ```
-Browser ──► Next.js pages (server components read SQLite directly, read-only)
-        └─► Next.js API routes (/api/*)  ──zod-validated JSON──►  engine bridge (one long-lived Python process)
-                                                                   └─► pipeline.Lifecycle / jobs / agent ──► SQLite
-                                                                   └─► worker.py processes (benchmarks)
+Browser ──► Next.js pages (server components; engine data read-only from per-workspace SQLite)
+        └─► Next.js API routes (/api/*, zod-validated, role-checked, rate-limited)
+                 ├─► Prisma (accounts, sessions, workspaces, roles, notifications, app audit log, email reports)
+                 └─► engine bridge (one long-lived Python process per server)
+                          └─► pipeline.Lifecycle / jobs / agent ──► engine/workspaces/<id>/retrainwise.db
+                          └─► worker.py processes (training jobs, benchmarks)
 ```
 
-* **Reads**: pages query `engine/retrainwise.db` with `better-sqlite3` in read-only mode (WAL allows this while the
-  engine writes).
-* **Writes and ML work**: every action goes through `src/lib/engine.ts`, which keeps one Python process running
-  `engine/bridge.py serve` and sends it one JSON command at a time. Only allow-listed commands exist; arguments are
-  validated by zod in the API route, again by the bridge, and again by the engine. Nothing goes through a shell.
-* Slow, self-contained commands (dataset downloads, Ollama explanations) run in a separate one-shot Python process so
-  they cannot block the dashboard. Benchmarks run in `engine/worker.py` processes with progress in SQLite.
-* **Duplicate-action prevention**: buttons are disabled while a request runs; the API refuses an action that is already
-  queued or running (HTTP 409); batch processing is keyed by the expected stream position; evaluations are keyed by
-  (run, position, model, settings); and each decision can be approved at most once (`UNIQUE` in SQLite).
-* **Transactional persistence**: every engine write uses `BEGIN IMMEDIATE` transactions (`engine/database.py`).
-* **Local-only API**: requests must come to `localhost`/`127.0.0.1` (blocks LAN access and DNS rebinding),
-  state-changing requests must be `application/json` and same-origin. Set `RETRAINWISE_ALLOW_REMOTE=1` only if you
-  deliberately want to expose the dashboard on a network.
-* On engine start, executions that were cut off by a crash or restart are marked `interrupted`, and benchmark jobs
-  whose worker stopped heart-beating are marked `interrupted`. Nothing is resumed silently.
+* Writes and ML work go through `src/lib/engine.ts`, which keeps one Python process running `engine/bridge.py serve`.
+  Only allow-listed commands exist; arguments are validated in the API route, the bridge and the engine.
+* Slow commands (dataset downloads, language-model explanations, Ollama model downloads) run in separate one-shot
+  processes. Training jobs and benchmarks run in `engine/worker.py` with progress and logs in SQLite.
+* Duplicate actions are refused (in-flight keys, expected stream positions, unique approvals); audit tables reject
+  `UPDATE` and `DELETE` through database triggers.
 
 More detail: [ARCHITECTURE.md](ARCHITECTURE.md), [METHODOLOGY.md](METHODOLOGY.md), [DATASETS.md](DATASETS.md),
-[DEMO_GUIDE.md](DEMO_GUIDE.md), [REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md),
-[RESEARCH_REPORT.md](RESEARCH_REPORT.md).
+[DEMO_GUIDE.md](DEMO_GUIDE.md), [RESEARCH_REPORT.md](RESEARCH_REPORT.md), [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
 
 ## Pages
 
 | Page | What you can do |
 |---|---|
-| **Overview** | Active model version, accuracy, rolling error (95% CI), max PSI, counterfactual staleness estimate (probe DiD), model age, labelled samples, simulated spend vs budget, the latest recommendation, the workflow stepper, recent activity and limitations |
-| **Data & simulation** | Choose synthetic, Electricity, Airlines or Covertype; download and cache real datasets with provenance and checksums; inspect schema, first rows and class balance; set seed and sample size; start a stream; process the next batch(es) |
-| **Monitoring** | Accuracy, precision, recall, F1, rolling error with Wilson interval, ADWIN/DDM alarms, learning debt and staleness, probe-model results (deployed vs probe error, difference-in-differences with interval, task-hardness shift, renewal rule, probe log with VOI and cost), a PSI heatmap per feature and batch, label availability, and the active model's reference window. States clearly that feature drift alone does not prove concept drift |
-| **Decision analysis** | Estimated avoidable error and probe evidence, the renewal rule, recovery-ratio assumptions, ranked keep / partial / full actions, the benefit/cost/net formula with real numbers, itemised costs (incl. probe), confidence intervals, feasibility, guardrails, hold-out evidence, sensitivity analysis and a what-if explorer |
-| **Model lifecycle** | Explicit approval form (name + confirmation), agent-prepared requests, chronological validation outcomes, model registry with artifact metadata, rejected candidates, post-update monitoring and recovery outcomes (realised gain ÷ avoidable error) and rollback |
-| **Experiments** | Benchmarks of Never, Calendar, Drift-triggered, a CARA-CT-inspired cost-aware baseline, RetrainWise and a constrained hindsight oracle; live progress and cancellation; result tables, charts, per-batch traces, CSV/JSON export |
-| **Agent & audit** | Deterministic explanations by default, optional local Ollama tool calling over read-only tools (telemetry, registry, probe results, pricing, evaluations; it can only *prepare* a request), stored reports with every tool call, approvals and outcomes, and a filterable, exportable (JSON/CSV) audit log |
-| **Settings** | Budgets (including the monitoring budget), cooldowns, probe scheduling and frequency, recovery priors, cost regime and price trace, prediction horizon, error value, evidence thresholds, batch size, label delay and availability, model parameters, agent limits and bounded autonomy, plus the assumed pricing snapshot |
+| **Landing, Docs, Research, Privacy, Terms, Contact** | Public pages; Research reads the benchmark CSVs; Contact emails `CONTACT_EMAIL` |
+| **Overview** | Model health, rolling error, staleness estimate, budget, the current recommendation, lifecycle stage, next step, activity |
+| **Data & streams** | Choose and download datasets with provenance, inspect schema and rows, set stream options, start streams, process batches |
+| **Monitoring** | Error and metrics with intervals, counterfactual staleness (probe DiD), PSI heatmap, ADWIN/DDM, renewal rule, probe log |
+| **Decision analysis** | Ranked keep / partial / full with the arithmetic, guardrails, hold-out evidence, sensitivity, what-if, request and approve |
+| **Model lifecycle** | Production model, pending approvals, post-update outcomes, rollback, version history, approvals |
+| **Models** | Train model (real training with live logs), candidates, versions, job history; version pages with exact metrics, confusion matrix, validation gate, artifact, exports, promote / reject / rollback |
+| **Experiments** | Benchmark six policies, live progress, results, traces, CSV export |
+| **Agent & audit** | Open-source model explanations, agent-prepared requests, reports with tool calls, filterable and exportable audit trail |
+| **Settings** | Workspace, Team (invite, roles), Engine settings (with undo), Pricing assumptions |
+| **Profile** | Profile details, notification and email-report preferences, sessions, sign out |
+
+## Database and migrations
+
+```bash
+npm run db:migrate     # create and apply a migration after editing prisma/schema.prisma
+npm run db:studio      # browse the app database
+```
+
+`npm run dev` and `npm run build` apply pending migrations automatically (`prisma migrate deploy`).
 
 ## Real datasets (explicit download, never substituted)
 
-Use **Download and cache** on *Data & simulation*, or:
-
-```bash
-python engine/datasets.py electricity airlines covertype
-```
-
-This writes `engine/data_<name>.csv.gz` and `engine/data_<name>_provenance.json` (source URL, retrieval time, SHA-256
-checksums, target column, licence, ordering notes). If a real dataset is missing, the app says so; it never falls back
-to synthetic data.
-
-## Optional local LLM (Ollama)
-
-Install [Ollama](https://ollama.com), pull a tool-calling model (for example `ollama pull llama3.1`), then choose
-**Local Ollama** on *Agent & audit*. The agent only reads evidence through bounded, schema-validated tools and may at
-most prepare an execution request, which a person must approve on *Model lifecycle*. If Ollama is unavailable, the
-attempt is recorded and the labelled deterministic explanation is used instead.
+Use **Download** on *Data & streams*, or `python engine/datasets.py electricity airlines covertype`. Files and
+provenance (source URL, time, SHA-256 checksums, licence) are written to `engine/`. If a real dataset is missing, the
+app says so; it never falls back to synthetic data.
 
 ## Tests
 
@@ -139,39 +197,39 @@ attempt is recorded and the labelled deterministic explanation is used instead.
 npm test
 ```
 
-This runs the TypeScript type check and the Python engine suite (`engine/test_project.py`, 66 tests: economics,
-guardrails, PSI/ADWIN/DDM, preprocessing leakage, training, reproducibility, approval enforcement, duplicate
-prevention, validation rejection, promotion, rollback, restart recovery, the agent tool loop, the job worker, the
-web bridge protocol, and the probe/DiD/renewal/VOI/recovery-ratio logic). The engine tests alone: `npm run test:engine`.
+Runs the TypeScript type check and the Python engine suite (`engine/test_project.py`: economics, guardrails,
+monitors, training, approvals, promotion, rollback, recovery, the agent tool loop and the open-source model provider,
+jobs, the bridge, and the probe/DiD/renewal/VOI logic). Engine only: `npm run test:engine`.
 
-## Experiments from the command line
+## Deployment
 
-```bash
-cd engine
-python experiments.py --datasets synthetic electricity airlines covertype --size standard --seeds 1 2 3 --regimes cheap balanced expensive --prefix results
-python reporting.py charts results
-```
+RetrainWise runs a **long-lived Python engine** next to the web server and keeps state in SQLite files, so it needs a
+host with a persistent disk and Python 3.10–3.12: a VM, a container platform (Docker on Fly.io, Railway, Render,
+a cloud VM) or your own server.
 
-Outputs (`<prefix>_summary.csv`, `<prefix>_details.json`, `<prefix>_aggregate.csv`, `<prefix>_chart_*.png`) appear in
-`engine/` and on the *Experiments* page. The submitted results are `results_*` (216 standard-size runs) and
-`results_full_*` (complete datasets), summarised in [RESEARCH_REPORT.md](RESEARCH_REPORT.md).
+* Set the variables above (production requires `AUTH_SECRET`, `AUTH_URL` and an email provider).
+* `npm ci && npm run setup:python && npm run build && npm run start`.
+* Put it behind HTTPS and add the domain to `RETRAINWISE_ALLOWED_HOSTS`.
+* For PostgreSQL, switch the Prisma provider and `DATABASE_URL`; the engine databases stay on local disk.
+
+**Vercel**: the marketing pages build and serve on Vercel, but the application itself does not work there. Serverless
+functions cannot run the Python engine process or keep SQLite files between requests. Use one of the hosts above
+for the full app (Vercel can still host the public site if you split it out).
 
 ## Project layout
 
 | Path | Role |
 |---|---|
-| `src/app/` | Next.js pages (one folder per page) and API routes under `src/app/api/` |
-| `src/components/` | UI primitives, charts (Recharts), forms and page-specific client components |
-| `src/lib/engine.ts` | Python bridge: long-lived engine process, command queue, timeouts, duplicate detection |
-| `src/lib/db.ts`, `src/lib/queries.ts` | Read-only SQLite access and typed queries |
-| `src/lib/api.ts` | Local-only request guard, JSON body validation, error mapping |
-| `engine/bridge.py` | JSON command bridge (serve / one-shot modes) over the engine |
-| `engine/staleness.py` | Probe model, difference-in-differences, renewal rule, VOI probe scheduling, recovery ratios |
-| `engine/pipeline.py`, `monitoring.py`, `models.py`, `economics.py`, `agent.py`, `experiments.py`, `datasets.py`, `jobs.py`, `worker.py` | The Python lifecycle engine (unchanged algorithms) |
-| `engine/retrainwise.db`, `engine/model_v*.joblib` | Runtime state (recreated automatically) |
-| `scripts/` | `setup-python`, `check-python`, `run-engine-tests` helpers |
+| `src/app/(marketing)/` | Landing, docs, research, privacy, terms, contact |
+| `src/app/(app)/` | Signed-in application pages |
+| `src/app/signin/`, `src/app/onboarding/` | Code sign-in and first-run setup |
+| `src/app/api/` | API routes (validated, role-checked) |
+| `src/lib/` | Auth, permissions, engine bridge, queries, email template and reports, OTP |
+| `prisma/` | App database schema and migrations |
+| `engine/` | The Python lifecycle engine (`pipeline`, `staleness`, `training`, `agent`, `worker`, `bridge`, tests) |
+| `scripts/` | Environment setup, Python checks and test helpers |
 
 ## Resetting
 
-Stop the app, delete `engine/retrainwise.db`, `engine/retrainwise.db-wal`, `engine/retrainwise.db-shm` and
-`engine/model_v*.joblib`, then start again.
+Stop the app, delete `data/app.db` (accounts and workspaces) and/or `engine/workspaces/` (engine state), then start
+again; migrations recreate the database.

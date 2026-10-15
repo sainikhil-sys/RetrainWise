@@ -4,6 +4,7 @@ import { body, route } from "@/lib/api";
 import { AuthError } from "@/lib/authz";
 import { notify } from "@/lib/notify";
 import { getModel } from "@/lib/queries";
+import { reportFor, ver } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,15 @@ export const POST = route<{ version: string }>(
       body: `Approved by ${ctx.user.email}.`,
       href: `/models/${v}`,
       dedupeKey: `promoted:${v}`,
+    });
+    reportFor(ctx, {
+      kind: "model_promoted",
+      title: `Model ${ver(v)} promoted to production`,
+      summary: "The candidate passed its checksum and chronological validation gate again and now serves the stream. The previous version stays archived for rollback.",
+      status: { label: "Promoted", tone: "ok" },
+      facts: [["Version", ver(v)], ["Stream", r.run_id], ["Approved by", ctx.user.email]],
+      href: `/models/${v}`,
+      ctaLabel: "Open the model",
     });
     return r;
   },

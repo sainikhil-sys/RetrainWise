@@ -54,9 +54,9 @@
 }
 
 @theme inline {
-  --font-sans: var(--font-geist), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: var(--font-montserrat), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "Cascadia Code", Consolas, monospace;
-  --font-serif: var(--font-display), "Iowan Old Style", Georgia, serif;
+  --font-serif: var(--font-montserrat), ui-sans-serif, system-ui, sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -113,7 +113,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
-    font-feature-settings: "ss01", "cv11";
+    font-feature-settings: normal;
   }
   ::selection {
     background: #0a0a0a;
@@ -193,4 +193,108 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ---------------------------------------------------------- marketing */
+.bg-dots {
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in oklab, var(--foreground) 14%, transparent) 1px, transparent 0);
+  background-size: 22px 22px;
+}
+.bg-grid-dark {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.mask-fade-y {
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 30%, transparent 75%);
+}
+.mask-fade-x {
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+@keyframes rw-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.animate-marquee {
+  animation: rw-marquee 40s linear infinite;
+}
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+@keyframes rw-pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--ok) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+.animate-pulse-dot {
+  animation: rw-pulse-dot 2.2s ease-in-out infinite;
+}
+
+/* Headings use the "font-serif" utility, which is now Montserrat. Sizes in the
+   markup were set for a condensed display face, so headings are normalised by
+   x-height (rendering about 20% smaller) and set semibold with tight tracking. */
+.font-serif {
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  font-size-adjust: 0.4;
+}
+
+/* Long-form marketing content (docs, research, legal) */
+.doc-prose a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 4px;
+}
+.doc-prose a:hover {
+  text-decoration-color: var(--foreground);
+}
+.doc-prose strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.doc-prose ul,
+.doc-prose ol.list {
+  padding-left: 1.25rem;
+}
+.doc-prose ul {
+  list-style: disc;
+}
+.doc-prose ol.list {
+  list-style: decimal;
+}
+.doc-prose li + li {
+  margin-top: 0.35rem;
+}
+.doc-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--muted);
+  padding: 0.08rem 0.35rem;
+  border-radius: 4px;
+  color: var(--foreground);
+}
+.doc-prose pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  color: var(--foreground);
+}
+.doc-prose pre code {
+  background: none;
+  padding: 0;
 }

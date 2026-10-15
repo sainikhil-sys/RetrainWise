@@ -1,6 +1,8 @@
 """Agentic orchestration layer (L3).
 
-* Optional local Ollama tool calling over plain HTTP (``urllib``), no SDKs.
+* Optional open-source language models over plain HTTP (``urllib``), no SDKs:
+  local Ollama, or any OpenAI-compatible endpoint (Groq, OpenRouter, Together,
+  Hugging Face, LM Studio, vLLM). Tool calling in both cases.
 * A fixed set of bounded, read-only tools plus ``prepare_execution_request``,
   which only records a request; approval and execution stay in
   ``pipeline.Lifecycle`` (deterministic code).
@@ -12,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -239,6 +242,141 @@ def ollama_provider(model: str, deadline: float):
     return call
 
 
+# Open-source models that support tool calling. Sizes are approximate downloads.
+OLLAMA_CATALOG = [
+    {"id": "llama3.2:3b", "name": "Llama 3.2 3B", "vendor": "Meta", "size": "about 2.0 GB", "note": "Smallest; runs on most laptops."},
+    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "vendor": "Meta", "size": "about 4.9 GB", "note": "Good default for explanations."},
+    {"id": "qwen2.5:7b", "name": "Qwen 2.5 7B", "vendor": "Alibaba", "size": "about 4.7 GB", "note": "Strong at structured tool use."},
+    {"id": "qwen3:8b", "name": "Qwen 3 8B", "vendor": "Alibaba", "size": "about 5.2 GB", "note": "Newer Qwen generation."},
+    {"id": "granite3.3:8b", "name": "Granite 3.3 8B", "vendor": "IBM", "size": "about 4.9 GB", "note": "Apache-2.0 licensed."},
+    {"id": "mistral-nemo:12b", "name": "Mistral NeMo 12B", "vendor": "Mistral AI", "size": "about 7.1 GB", "note": "Larger; needs more memory."},
+]
+
+# OpenAI-compatible hosts that serve open-source models. Model ids are examples;
+# each provider's catalogue changes, so any id the endpoint lists can be used.
+OPENAI_PRESETS = [
+    {"id": "groq", "name": "Groq", "base_url": "https://api.groq.com/openai/v1", "key_url": "https://console.groq.com/keys",
+     "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b", "openai/gpt-oss-120b"]},
+    {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "key_url": "https://openrouter.ai/keys",
+     "models": ["meta-llama/llama-3.3-70b-instruct", "qwen/qwen-2.5-72b-instruct", "mistralai/mistral-small-3.2-24b-instruct"]},
+    {"id": "together", "name": "Together AI", "base_url": "https://api.together.xyz/v1", "key_url": "https://api.together.ai/settings/api-keys",
+     "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"]},
+    {"id": "huggingface", "name": "Hugging Face", "base_url": "https://router.huggingface.co/v1", "key_url": "https://huggingface.co/settings/tokens",
+     "models": ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"]},
+    {"id": "lmstudio", "name": "LM Studio (local)", "base_url": "http://127.0.0.1:1234/v1", "key_url": None, "models": []},
+    {"id": "ollama-v1", "name": "Ollama via /v1 (local)", "base_url": "http://127.0.0.1:11434/v1", "key_url": None, "models": ["llama3.1:8b", "qwen2.5:7b"]},
+]
+
+
+def llm_api_key():
+    key = os.environ.get("LLM_API_KEY", "").strip()
+    return key or None
+
+
+def _openai_messages(messages: list) -> list:
+    """Convert the loop's Ollama-style messages to the OpenAI chat format:
+    tool-call ids, JSON-string arguments, and tool results linked by id."""
+    out, pending = [], []
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            calls = []
+            for i, c in enumerate(m.get("tool_calls") or []):
+                fn = c.get("function") or {}
+                args = fn.get("arguments", {})
+                cid = c.get("id") or f"call_{len(out)}_{i}"
+                calls.append({"id": cid, "type": "function",
+                              "function": {"name": fn.get("name", ""),
+                                           "arguments": args if isinstance(args, str) else json.dumps(args)}})
+            pending = [c["id"] for c in calls]
+            msg = {"role": "assistant", "content": m.get("content") or ""}
+            if calls:
+                msg["tool_calls"] = calls
+            out.append(msg)
+        elif role == "tool":
+            cid = pending.pop(0) if pending else f"call_orphan_{len(out)}"
+            out.append({"role": "tool", "tool_call_id": cid, "content": m.get("content", "")})
+        else:
+            out.append({"role": role, "content": m.get("content", "")})
+    return out
+
+
+def openai_provider(base_url: str, model: str, deadline: float, api_key=None):
+    """Provider for any OpenAI-compatible chat-completions endpoint."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    key = api_key if api_key is not None else llm_api_key()
+
+    def call(messages: list, tools: list) -> dict:
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            raise TimeoutError("agent time budget exhausted")
+        payload = json.dumps({"model": model, "messages": _openai_messages(messages), "tools": tools,
+                              "tool_choice": "auto", "temperature": 0, "seed": 7, "max_tokens": 1800}).encode()
+        headers = {"Content-Type": "application/json", "User-Agent": "RetrainWise"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        request = urllib.request.Request(url, data=payload, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=min(remaining, 120)) as response:
+                body = response.read(2_000_001)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(400).decode("utf-8", "replace")
+            raise ValueError(f"endpoint returned HTTP {exc.code}: {detail}") from None
+        if len(body) > 2_000_000:
+            raise ValueError("model response too large")
+        data = json.loads(body)
+        choices = data.get("choices") or []
+        if not choices or "message" not in choices[0]:
+            raise ValueError(f"Unexpected response: {str(data)[:200]}")
+        msg = choices[0]["message"]
+        calls = []
+        for c in msg.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            raw = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else raw
+            except json.JSONDecodeError:
+                args = raw  # validate_arguments reports the error back to the model
+            calls.append({"id": c.get("id"), "function": {"name": fn.get("name", ""), "arguments": args}})
+        return {"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls}
+    return call
+
+
+def openai_status(base_url: str, timeout: float = 6.0) -> dict:
+    """Reachability and model list of an OpenAI-compatible endpoint (the key is never returned)."""
+    key = llm_api_key()
+    headers = {"User-Agent": "RetrainWise"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        req = urllib.request.Request(f"{base_url.rstrip('/')}/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read(3_000_000))
+        ids = sorted({str(m.get("id")) for m in (data.get("data") or []) if m.get("id")})[:300]
+        return {"available": True, "key_configured": bool(key), "models": ids}
+    except urllib.error.HTTPError as exc:
+        why = "API key missing or invalid" if exc.code in (401, 403) else f"HTTP {exc.code}"
+        return {"available": False, "key_configured": bool(key), "models": [], "error": why}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"available": False, "key_configured": bool(key), "models": [], "error": str(exc)[:200]}
+
+
+def ollama_pull(model: str, timeout: float = 3600) -> dict:
+    """Download an Ollama model (blocks until done)."""
+    payload = json.dumps({"model": model, "stream": False}).encode()
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/pull", data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read(200_000) or b"{}")
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"Ollama could not pull {model}: HTTP {exc.code} {exc.read(300).decode('utf-8', 'replace')}") from None
+    except (urllib.error.URLError, OSError) as exc:
+        raise ValueError(f"Ollama is not reachable at {OLLAMA_URL}: {exc}") from None
+    if data.get("status") != "success":
+        raise ValueError(f"Ollama pull did not finish: {str(data)[:200]}")
+    return {"model": model, "status": "success"}
+
+
 def ollama_status(timeout: float = 2.0) -> dict:
     try:
         with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=timeout) as response:
@@ -378,7 +516,8 @@ def deterministic_report(decision: dict, evidence: dict, settings=None) -> str:
 
 
 def explain(lifecycle, decision: dict, mode: str = "deterministic", model: str = "llama3.1",
-            provider=None, timeout_seconds: int | None = None, max_iterations: int | None = None) -> dict:
+            provider=None, timeout_seconds: int | None = None, max_iterations: int | None = None,
+            base_url: str | None = None) -> dict:
     """Produce and store an explanation for ``decision``.
 
     ``provider`` (a callable ``(messages, tools) -> message``) is injectable for
@@ -392,12 +531,19 @@ def explain(lifecycle, decision: dict, mode: str = "deterministic", model: str =
     with lifecycle.db.transaction() as c:
         cur = c.execute("INSERT INTO agent_reports(decision_id,created,mode,model,status,report,iterations,"
                         "duration_seconds) VALUES (?,?,?,?,?,?,?,?)",
-                        (decision["id"], now(), mode, model if mode == "ollama" else None, "running", "", 0, 0.0))
+                        (decision["id"], now(), mode, model if mode in ("ollama", "openai") else None, "running", "", 0, 0.0))
         report_id = int(cur.lastrowid)
     tools = Toolbox(lifecycle, decision, report_id)
     iterations, error, status = 0, None, "completed"
-    if mode == "ollama":
-        call = provider or ollama_provider(model, deadline=started + timeout_seconds)
+    if mode in ("ollama", "openai"):
+        host = (base_url or settings.llm_base_url).split("//")[-1].split("/")[0]
+        source = f"Ollama `{model}`" if mode == "ollama" else f"`{model}` via {host}"
+        if provider is not None:
+            call = provider
+        elif mode == "openai":
+            call = openai_provider(base_url or settings.llm_base_url, model, deadline=started + timeout_seconds)
+        else:
+            call = ollama_provider(model, deadline=started + timeout_seconds)
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"Explain decision {decision['id']} for run {decision['run_id']} "
                                                 f"(dataset {decision['dataset']}). Gather evidence with the tools first."}]
@@ -443,13 +589,13 @@ def explain(lifecycle, decision: dict, mode: str = "deterministic", model: str =
                 status = "completed_with_warning"
                 error = check["detail"]
                 warning = f"> ⚠ **Consistency check failed:** {check['detail']}\n\n"
-            report = (f"**LLM explanation (Ollama `{model}`, advisory).** Numbers must match the verified figures "
+            report = (f"**LLM explanation ({source}, open-source model, advisory).** Numbers must match the verified figures "
                       f"below; the deterministic engine, not the model, makes and enforces the decision.\n\n{warning}"
                       f"{text}\n\n---\n<details><summary>Verified figures (deterministic)</summary>\n\n{verified}\n</details>")
         except Exception as exc:  # noqa: BLE001 - every failure must fall back
             error, status = f"{type(exc).__name__}: {exc}"[:500], "fallback"
             evidence = {n: tools.call(n, {}) for n in ("get_monitoring_telemetry", "get_action_evaluations")}
-            report = (f"**Ollama unavailable or rejected ({error}); showing the deterministic explanation.**\n\n"
+            report = (f"**{source} unavailable or rejected ({error}); showing the deterministic explanation.**\n\n"
                       + deterministic_report(decision, evidence, settings))
     else:
         evidence = {n: tools.call(n, {}) for n in ("get_monitoring_telemetry", "get_registry_history",

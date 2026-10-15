@@ -7,6 +7,7 @@ import { layout, sendMail } from "@/lib/mail";
 import { notify } from "@/lib/notify";
 import { ROLES, ROLE_LABELS } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,14 @@ export const POST = route(
       await prisma.invitation.update({ where: { workspaceId_email: { workspaceId: ctx.workspace.id, email: b.email } }, data: { acceptedAt: new Date() } });
       await notify({ workspaceId: ctx.workspace.id, kind: "team", userIds: [existingUser.id], title: `You were added to ${ctx.workspace.name}`, body: `Role: ${ROLE_LABELS[b.role]}`, href: "/overview" });
     }
+    reportFor(ctx, {
+      kind: "member_invited",
+      title: `Invitation sent to ${b.email}`,
+      summary: existingUser ? "They already had an account and were added to the workspace right away." : "They join with this role the next time they sign in with that address.",
+      status: { label: ROLE_LABELS[b.role], tone: "neutral" },
+      facts: [["Email", b.email], ["Role", ROLE_LABELS[b.role]], ["Delivery", delivery.delivered === "dev-outbox" ? "not delivered (development outbox)" : "sent"]],
+      href: "/settings/team",
+    });
     return { ok: true, delivered: delivery.delivered };
   },
   { permission: "team.manage", limit: { max: 20, windowMs: 60_000 } },

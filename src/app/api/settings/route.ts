@@ -5,6 +5,7 @@ import { AuthError } from "@/lib/authz";
 import { audit } from "@/lib/audit";
 import { can, OPERATOR_SETTINGS } from "@/lib/permissions";
 import { getSettings } from "@/lib/queries";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -65,8 +66,10 @@ const SettingsBody = z.object({
       budget: num.min(0),
       calendar_every_batches: num.int().min(1),
       oracle_max_checkpoints: num.int().min(1),
-      agent_mode: z.enum(["deterministic", "ollama"]),
+      agent_mode: z.enum(["deterministic", "ollama", "openai"]),
       ollama_model: z.string().regex(/^[A-Za-z0-9._:/-]{1,80}$/, "must be a short model tag such as llama3.1"),
+      llm_base_url: z.string().url().max(200).regex(/^https?:\/\//, "must be an http(s) URL"),
+      llm_model: z.string().regex(/^[A-Za-z0-9._:/@-]{1,120}$/, "must be a model id such as llama-3.3-70b-versatile"),
       agent_timeout_seconds: num.int().min(1).max(600),
       agent_max_iterations: num.int().min(1).max(12),
       autonomy: z.boolean(),
@@ -92,6 +95,16 @@ export const PUT = route(
     }
     const r = await ctx.engine.call("save_settings", { settings: b.settings, actor: ctx.user.email }, { timeoutMs: 60_000, dedupeKey: "settings" });
     await audit({ kind: "engine_settings_changed", actorEmail: ctx.user.email, actorId: ctx.user.id, workspaceId: ctx.workspace.id, detail: { changed } });
+    if (changed.length) {
+      reportFor(ctx, {
+        kind: "settings_changed",
+        title: `${changed.length} engine setting${changed.length === 1 ? "" : "s"} changed`,
+        summary: "Pending decisions computed under the old assumptions are now marked stale. Evaluate again for a fresh recommendation.",
+        status: { label: "Saved", tone: "ok" },
+        facts: changed.slice(0, 12).map((k) => [k, `${JSON.stringify(current[k])} → ${JSON.stringify((b.settings as Record<string, unknown>)[k])}`] as [string, string]),
+        href: "/settings/engine",
+      });
+    }
     return r;
   },
   { permission: "stream.configure" },

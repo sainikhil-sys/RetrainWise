@@ -4,6 +4,7 @@ import { body, route } from "@/lib/api";
 import { AuthError } from "@/lib/authz";
 import { getDb } from "@/lib/db";
 import { notify } from "@/lib/notify";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,14 @@ export const POST = route<{ id: string }>(
       body: result.outcome,
       href: "/lifecycle",
       dedupeKey: `request-outcome:${requestId}`,
+    });
+    reportFor(ctx, {
+      kind: "request_approved",
+      title: `Request #${requestId} approved: ${result.status}`,
+      summary: result.outcome,
+      status: { label: result.status, tone: result.status === "promoted" || result.status === "deferred" ? "ok" : "bad" },
+      facts: [["Request", `#${requestId}`], ["Decision", r.decision_id], ["Action", r.action], ["Requested by", r.prepared_by]],
+      href: "/lifecycle",
     });
     return result;
   },

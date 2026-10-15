@@ -10,6 +10,8 @@ export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const ctx = await requirePage();
+  // First sign-in: collect the profile, then (for admins) set up the workspace.
+  if (!ctx.user.profileCompleted) redirect("/onboarding");
   if (!ctx.workspace.onboardedAt && can(ctx.role, "workspace.manage")) redirect("/onboarding");
   let run = null;
   try {

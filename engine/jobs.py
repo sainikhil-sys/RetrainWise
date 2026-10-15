@@ -92,6 +92,10 @@ def submit(db: Database, payload: dict, actor: str = "user", kind: str = "benchm
     else:
         raise ValueError("Unknown job kind")
     digest = hashlib.sha256(dumps(payload).encode()).hexdigest()
+    if kind == "benchmark":
+        # Recorded for the completion report; added after hashing so identical
+        # requests from different people still share one job.
+        payload = {**payload, "requested_by": actor}
     recover(db)
     with db.transaction() as c:
         same = c.execute("SELECT id FROM jobs WHERE payload_hash=? AND status IN ('queued','running')",

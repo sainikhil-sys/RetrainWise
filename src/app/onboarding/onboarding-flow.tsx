@@ -11,7 +11,9 @@ import { api } from "@/components/rw-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DATASET_INFO, type DatasetName } from "@/lib/catalog";
+import type { Profile } from "@/lib/profile";
 import { cn } from "@/lib/utils";
+import { ProfileStep } from "./profile-step";
 
 type Dataset = { name: DatasetName; cached: boolean; synthetic: boolean; title: string };
 
@@ -21,14 +23,21 @@ const REGIMES = [
   { id: "expensive", title: "Expensive", text: "GPU instance, regulated sign-off, high deployment risk. About $570 per full retrain (assumed)." },
 ] as const;
 
-const STEPS = ["Workspace", "Data", "Cost regime", "Start"];
+const STEPS = ["Profile", "Workspace", "Data", "Cost regime", "Start"];
 
 export function OnboardingFlow({
   email,
   workspace,
   workspaces,
   canAdmin,
+  needsProfile,
+  profile,
+  workspaceReady,
 }: {
+  needsProfile: boolean;
+  profile: Partial<Profile>;
+  /** The workspace is already set up (or the user cannot set it up): after the profile, go to the app. */
+  workspaceReady: boolean;
   email: string;
   workspace: { id: string; name: string; defaultRegime: string } | null;
   workspaces: { id: string; name: string }[];
@@ -36,6 +45,8 @@ export function OnboardingFlow({
 }) {
   const router = useRouter();
   const [step, setStep] = useState(workspace ? 1 : 0);
+  const [profileDone, setProfileDone] = useState(!needsProfile);
+  const shown = profileDone ? step + 1 : 0; // position in the stepper (Profile is first)
   const [wsName, setWsName] = useState("");
   const [datasets, setDatasets] = useState<Dataset[] | null>(null);
   const [dataset, setDataset] = useState<DatasetName>("synthetic");
@@ -44,11 +55,11 @@ export function OnboardingFlow({
   const [downloading, setDownloading] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!workspace) return;
+    if (!workspace || !profileDone) return;
     api<{ datasets: Dataset[] }>("/api/datasets")
       .then((r) => setDatasets(r.datasets))
       .catch((e: Error) => toast.error("Could not read datasets", { description: e.message }));
-  }, [workspace]);
+  }, [workspace, profileDone]);
 
   const selected = datasets?.find((d) => d.name === dataset);
 
@@ -92,9 +103,9 @@ export function OnboardingFlow({
         <ol className="mb-12 flex items-center gap-3 text-[12.5px]" aria-label="Setup steps">
           {STEPS.map((s, i) => (
             <li key={s} className="flex items-center gap-3">
-              <span className={cn("flex items-center gap-2", i === step ? "font-medium text-foreground" : i < step ? "text-foreground" : "text-ink-3")} aria-current={i === step ? "step" : undefined}>
-                <span className={cn("flex size-5 items-center justify-center rounded-full border text-[11px]", i < step ? "border-foreground bg-foreground text-white" : i === step ? "border-foreground" : "border-border")}>
-                  {i < step ? <Check size={11} weight="bold" /> : i + 1}
+              <span className={cn("flex items-center gap-2", i === shown ? "font-medium text-foreground" : i < shown ? "text-foreground" : "text-ink-3")} aria-current={i === shown ? "step" : undefined}>
+                <span className={cn("flex size-5 items-center justify-center rounded-full border text-[11px]", i < shown ? "border-foreground bg-foreground text-white" : i === shown ? "border-foreground" : "border-border")}>
+                  {i < shown ? <Check size={11} weight="bold" /> : i + 1}
                 </span>
                 {s}
               </span>
@@ -103,8 +114,24 @@ export function OnboardingFlow({
           ))}
         </ol>
 
-        <Reveal key={step}>
-          {step === 0 && (
+        <Reveal key={profileDone ? step : "profile"}>
+          {!profileDone && (
+            <ProfileStep
+              email={email}
+              initial={profile}
+              onDone={() => {
+                if (workspaceReady) {
+                  router.push("/overview");
+                  router.refresh();
+                  return;
+                }
+                setProfileDone(true);
+                router.refresh();
+              }}
+            />
+          )}
+
+          {profileDone && step === 0 && (
             <section>
               <h1 className="font-serif text-[44px] leading-[1.05] tracking-[-0.01em]">Create a workspace</h1>
               <p className="mt-3 text-[15px] leading-relaxed text-ink-2">
@@ -125,7 +152,7 @@ export function OnboardingFlow({
             </section>
           )}
 
-          {step === 1 && (
+          {profileDone && step === 1 && (
             <section>
               <h1 className="font-serif text-[44px] leading-[1.05] tracking-[-0.01em]">Choose a data stream</h1>
               <p className="mt-3 text-[15px] leading-relaxed text-ink-2">
@@ -192,7 +219,7 @@ export function OnboardingFlow({
             </section>
           )}
 
-          {step === 2 && (
+          {profileDone && step === 2 && (
             <section>
               <h1 className="font-serif text-[44px] leading-[1.05] tracking-[-0.01em]">Set a default cost regime</h1>
               <p className="mt-3 text-[15px] leading-relaxed text-ink-2">
@@ -213,7 +240,7 @@ export function OnboardingFlow({
             </section>
           )}
 
-          {step === 3 && (
+          {profileDone && step === 3 && (
             <section>
               <h1 className="font-serif text-[44px] leading-[1.05] tracking-[-0.01em]">Start your first monitored model</h1>
               <p className="mt-3 text-[15px] leading-relaxed text-ink-2">

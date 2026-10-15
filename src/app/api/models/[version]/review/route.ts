@@ -4,6 +4,7 @@ import { body, reasonText, route } from "@/lib/api";
 import { AuthError } from "@/lib/authz";
 import { notify } from "@/lib/notify";
 import { can } from "@/lib/permissions";
+import { reportFor, ver } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,14 @@ export const POST = route<{ version: string }>(
         dedupeKey: `promotion-request:${v}`,
       });
     }
+    reportFor(ctx, {
+      kind: b.action === "request" ? "promotion_requested" : "candidate_rejected",
+      title: b.action === "request" ? `Promotion requested for ${ver(v)}` : `Candidate ${ver(v)} rejected`,
+      summary: b.action === "request" ? "Approvers were notified. Production changes only after one of them promotes it." : "The candidate can no longer be promoted. Its metrics and logs stay in the history.",
+      status: b.action === "request" ? { label: "Awaiting approval", tone: "warn" } : { label: "Rejected", tone: "bad" },
+      facts: [["Version", ver(v)], ["Note", b.reason || "—"]],
+      href: `/models/${v}`,
+    });
     return r;
   },
   { permission: "action.request" },

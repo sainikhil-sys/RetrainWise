@@ -10,5 +10,6 @@ export const GET = route<{ version: string }>(async (_req, { version }, ctx) => 
   const v = z.coerce.number().int().positive().parse(version);
   const model = await getModel(ctx.workspace.id, v);
   if (!model) throw new AuthError(404, "Unknown model version");
+  if (ctx.role === "viewer" && (model.status === "candidate" || model.status === "rejected")) throw new AuthError(404, "Unknown model version");
   return { model, events: await getModelEvents(ctx.workspace.id, v) };
 });

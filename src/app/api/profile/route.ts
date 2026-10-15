@@ -5,15 +5,22 @@ import { errorResponse } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { AuthError, currentUser } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
+import { ProfileSchema } from "@/lib/profile";
 
 export const dynamic = "force-dynamic";
 
 const Update = z.object({
   name: z.string().trim().max(80).optional(),
+  jobTitle: ProfileSchema.shape.jobTitle.optional(),
+  company: ProfileSchema.shape.company.optional(),
+  teamRole: ProfileSchema.shape.teamRole.optional(),
+  useCase: ProfileSchema.shape.useCase.optional(),
+  modelsInProduction: ProfileSchema.shape.modelsInProduction.optional(),
   notifyApprovals: z.boolean().optional(),
   notifyDecisions: z.boolean().optional(),
   notifyJobs: z.boolean().optional(),
   emailApprovals: z.boolean().optional(),
+  emailReports: z.boolean().optional(),
   dismissTip: z.string().regex(/^[a-z0-9-]{1,40}$/).optional(),
   resetTips: z.boolean().optional(),
 });

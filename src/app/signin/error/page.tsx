@@ -7,7 +7,7 @@ import { AuthFrame } from "../auth-frame";
 export const metadata: Metadata = { title: "Sign-in problem" };
 
 const MESSAGES: Record<string, string> = {
-  Verification: "This sign-in link has expired or was already used. Request a new one.",
+  Verification: "This sign-in code has expired, was already used, or too many attempts were made. Request a new code.",
   Configuration: "Sign-in is not configured correctly on the server. Check AUTH_SECRET and the mail settings.",
   AccessDenied: "Access was denied.",
 };

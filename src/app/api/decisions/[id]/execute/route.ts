@@ -5,6 +5,7 @@ import { AuthError } from "@/lib/authz";
 import { ACTION_LABELS } from "@/lib/catalog";
 import { getDb } from "@/lib/db";
 import { notify } from "@/lib/notify";
+import { reportFor } from "@/lib/report";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +49,15 @@ export const POST = route<{ id: string }>(
       body: result.outcome,
       href: "/lifecycle",
       dedupeKey: `outcome:${decisionId}`,
+    });
+    reportFor(ctx, {
+      kind: "decision_executed",
+      title: `${ACTION_LABELS[b.action]}: ${result.status}`,
+      summary: result.outcome,
+      status: { label: result.status, tone: result.status === "promoted" || result.status === "deferred" ? "ok" : result.status === "rejected" || result.status === "failed" ? "bad" : "neutral" },
+      facts: [["Decision", decisionId], ["Action", ACTION_LABELS[b.action]], ["Approved by", ctx.user.email]],
+      href: "/lifecycle",
+      ctaLabel: "Open Model lifecycle",
     });
     return result;
   },

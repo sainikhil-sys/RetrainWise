@@ -33,9 +33,19 @@ model User {
   notifyDecisions   Boolean @default(true)
   notifyJobs        Boolean @default(true)
   emailApprovals    Boolean @default(false)
+  // Email a short report after each action (runs, decisions, training, approvals...)
+  emailReports      Boolean @default(true)
   // Onboarding callouts the user has dismissed (comma-separated keys)
   dismissedTips     String  @default("")
   lastWorkspaceId   String?
+
+  // Profile collected during first-time onboarding
+  jobTitle           String?
+  company            String?
+  teamRole           String? // ml_engineer | data_scientist | mlops | engineering_lead | risk_compliance | other
+  useCase            String? // what they monitor, free text from a short list
+  modelsInProduction String? // "1" | "2-5" | "6-20" | "21+" | "none"
+  profileCompletedAt DateTime?
 
   accounts      Account[]
   sessions      Session[]
@@ -162,4 +172,18 @@ model DevEmail {
   url       String?
   text      String
   createdAt DateTime @default(now())
+}
+
+/// One row per work-report email sent (also prevents duplicates, e.g. job completion).
+model EmailReport {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String?
+  kind        String
+  dedupeKey   String   @unique
+  subject     String
+  delivered   String
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
 }

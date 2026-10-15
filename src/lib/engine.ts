@@ -53,6 +53,8 @@ export class EngineError extends Error {
 
 export type Command =
   | "ping"
+  | "llm_status"
+  | "ollama_pull"
   | "start_run"
   | "process_batches"
   | "evaluate"
@@ -146,12 +148,16 @@ export function resolvePython(): { path: string; source: string } {
     [venvPython(path.join(ENGINE_DIR, ".venv")), "engine/.venv"],
     [venvPython(path.join(process.cwd(), ".venv")), ".venv"],
   ];
-  if (win && process.env.LOCALAPPDATA) {
-    candidates.push([venvPython(path.join(process.env.LOCALAPPDATA, "RetrainWise", "venv")), "%LOCALAPPDATA%\\RetrainWise\\venv"]);
-  }
+  // In the user folder (not AppData): visible even to packaged desktop apps,
+  // whose terminals get a private copy of AppData.
   candidates.push([venvPython(path.join(os.homedir(), ".venvs", "retrainwise")), "~/.venvs/retrainwise"]);
+  if (win) {
+    // %LOCALAPPDATA% is missing in some shells and services; fall back to its usual location.
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    candidates.push([venvPython(path.join(local, "RetrainWise", "venv")), "%LOCALAPPDATA%\\RetrainWise\\venv"]);
+  }
   for (const [file, source] of candidates) {
-    if (fs.existsSync(file)) return { path: file, source };
+    if (fs.existsSync(/*turbopackIgnore: true*/ file)) return { path: file, source };
   }
   return { path: win ? "python" : "python3", source: "PATH" };
 }
@@ -237,7 +243,7 @@ class EngineDaemon {
       if (!fs.existsSync(BRIDGE)) return fail(`Engine bridge not found at ${BRIDGE}`);
       let proc: ChildProcessWithoutNullStreams;
       try {
-        proc = spawn(this.python.path, ["-B", "-u", BRIDGE, "serve"], {
+        proc = spawn(/*turbopackIgnore: true*/ this.python.path, ["-B", "-u", BRIDGE, "serve"], {
           cwd: ENGINE_DIR,
           env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" },
           windowsHide: true,
@@ -368,7 +374,7 @@ class EngineDaemon {
     try {
       return await new Promise<T>((resolve, reject) => {
         const python = resolvePython();
-        const proc = spawn(python.path, ["-B", BRIDGE, "call", command], {
+        const proc = spawn(/*turbopackIgnore: true*/ python.path, ["-B", BRIDGE, "call", command], {
           cwd: ENGINE_DIR,
           env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" },
           windowsHide: true,

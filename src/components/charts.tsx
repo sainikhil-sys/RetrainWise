@@ -131,20 +131,21 @@ export function LineChartMono({
   band?: { key: string; name: string };
   annotations?: Annotation[];
   hLines?: HLine[];
-  xFormat?: (v: number) => string;
+  xFormat?: "thousands" | ((v: number) => string);
   xLabel?: string;
   label: string;
   yDomain?: [number | "auto" | "dataMin" | "dataMax", number | "auto" | "dataMin" | "dataMax"];
 }) {
+  const xFmt = xFormat === "thousands" ? (x: number) => (Math.abs(x) >= 1000 ? `${Math.round(x / 1000)}k` : String(x)) : xFormat;
   return (
     <ChartReveal>
       <div role="img" aria-label={label} style={{ height }} className="w-full">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={data} margin={{ top: 18, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid stroke={INK.grid} vertical={false} />
-            <XAxis dataKey={xKey} {...axisProps} tickFormatter={xFormat} minTickGap={24} label={xLabel ? { value: xLabel, position: "insideBottomRight", offset: -2, fill: INK.axis, fontSize: 11 } : undefined} />
+            <XAxis dataKey={xKey} {...axisProps} tickFormatter={xFmt} minTickGap={24} label={xLabel ? { value: xLabel, position: "insideBottomRight", offset: -2, fill: INK.axis, fontSize: 11 } : undefined} />
             <YAxis {...axisProps} width={46} tickFormatter={(v) => tickY(v, yFormat)} domain={yDomain ?? ["auto", "auto"]} />
-            <Tooltip content={<TooltipBox yFormat={yFormat} labelFormat={(l) => (xFormat && typeof l === "number" ? xFormat(l) : `${xLabel ?? xKey} ${typeof l === "number" ? l.toLocaleString() : l}`)} />} cursor={{ stroke: "#c4c4c0", strokeDasharray: "3 3" }} />
+            <Tooltip content={<TooltipBox yFormat={yFormat} labelFormat={(l) => (xFmt && typeof l === "number" ? `${xLabel ?? xKey} ${xFmt(l)}` : `${xLabel ?? xKey} ${typeof l === "number" ? l.toLocaleString() : l}`)} />} cursor={{ stroke: "#c4c4c0", strokeDasharray: "3 3" }} />
             {band && <Area type="monotone" dataKey={band.key} name={band.name} stroke="none" fill="#f0f0ee" fillOpacity={1} isAnimationActive={false} connectNulls />}
             {hLines.map((h) => (
               <ReferenceLine key={h.label} y={h.y} stroke={h.tone === "bad" ? INK.bad : h.tone === "warn" ? INK.warn : INK.secondary} strokeDasharray="4 4" label={{ value: h.label, position: "insideTopRight", fill: h.tone === "bad" ? INK.bad : h.tone === "warn" ? INK.warn : INK.axis, fontSize: 10.5 }} />

@@ -17,6 +17,13 @@ if (probe.status === 0) {
   console.warn("\n[retrainwise] The Python engine is not ready.");
   console.warn(`  Interpreter tried: ${py.path} (${py.source})`);
   if (why) console.warn(`  Problem: ${why}`);
+  if (process.platform === "win32" && !process.env.LOCALAPPDATA) {
+    // Packaged (MSIX) desktop apps, such as the terminal panel inside the Claude
+    // desktop app, see a private copy of AppData, so a venv there is invisible.
+    console.warn("  Likely cause: this terminal runs inside a packaged app with its own private AppData,");
+    console.warn("  so the engine venv in %LOCALAPPDATA%\\RetrainWise\\venv cannot be seen from here.");
+    console.warn("  Run `npm run dev` from a regular PowerShell or Windows Terminal window instead.");
+  }
   console.warn("  Fix: run `npm run setup:python` (creates engine/.venv and installs engine/requirements.txt),");
   console.warn("       or set RETRAINWISE_PYTHON to a Python 3.10–3.12 interpreter that has them installed.");
   console.warn("  The dashboard will start, but actions need the engine.\n");

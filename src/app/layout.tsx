@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Geist_Mono, Montserrat } from "next/font/google";
 import type { ReactNode } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
@@ -7,8 +7,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import "./globals.css";
 
-const display = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["normal", "italic"], variable: "--font-display" });
-const sans = Geist({ subsets: ["latin"], variable: "--font-geist" });
+// Montserrat everywhere: interface text and headings ("font-serif" is the heading style).
+const sans = Montserrat({ subsets: ["latin"], weight: ["300", "400", "500", "600", "700"], style: ["normal", "italic"], variable: "--font-montserrat" });
 const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
@@ -21,7 +21,7 @@ export const viewport: Viewport = { themeColor: "#ffffff", colorScheme: "light" 
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable}`}>
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
         <Toaster position="bottom-right" />

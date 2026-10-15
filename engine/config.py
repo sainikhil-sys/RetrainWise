@@ -22,7 +22,7 @@ REGIMES = ("cheap", "balanced", "expensive")
 COST_TRACE_KINDS = ("flat", "diurnal", "spot", "custom")
 PROBE_MODES = ("adaptive", "fixed")
 BENEFIT_BASES = ("probe", "holdout")
-AGENT_MODES = ("deterministic", "ollama")
+AGENT_MODES = ("deterministic", "ollama", "openai")
 ESTIMATORS = ("sgd_logistic",)
 
 # Experiment sample-size configurations (rows taken from the start of the
@@ -103,6 +103,11 @@ class Settings:
     # Agent and autonomy
     agent_mode: str = "deterministic"
     ollama_model: str = "llama3.1"
+    # Open-source models served by any OpenAI-compatible endpoint (Groq, OpenRouter,
+    # Together, Hugging Face, LM Studio, vLLM, Ollama's /v1). The API key is read
+    # from the LLM_API_KEY environment variable and is never stored in settings.
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "llama-3.3-70b-versatile"
     agent_timeout_seconds: int = 240
     agent_max_iterations: int = 6
     autonomy: bool = False
@@ -190,6 +195,15 @@ class Settings:
         if not isinstance(name, str) or not 0 < len(name) <= 80 or not all(
                 ch.isalnum() or ch in "._:-/" for ch in name):
             raise ValueError("ollama_model must be a short model tag such as llama3.1")
+        url = self.llm_base_url
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")) or len(url) > 200 or any(
+                ch.isspace() for ch in url):
+            raise ValueError("llm_base_url must be an http(s) URL such as https://api.groq.com/openai/v1")
+        self.llm_base_url = url.rstrip("/")
+        name = self.llm_model
+        if not isinstance(name, str) or not 0 < len(name) <= 120 or not all(
+                ch.isalnum() or ch in "._:-/@" for ch in name):
+            raise ValueError("llm_model must be a model id such as llama-3.3-70b-versatile")
         return self
 
     def to_dict(self) -> dict:

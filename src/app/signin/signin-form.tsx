@@ -9,12 +9,12 @@ import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { requestMagicLink, type SignInState } from "./actions";
+import { requestCode, type SignInState } from "./actions";
 
-const Schema = z.object({ email: z.string().trim().min(1, "Enter your work email.").email("Enter a valid email address.") });
+const Schema = z.object({ email: z.string().trim().min(1, "Enter your email address.").email("Enter a valid email address.") });
 
 export function SignInForm({ next }: { next?: string }) {
-  const [state, action] = useActionState<SignInState, FormData>(requestMagicLink, null);
+  const [state, action] = useActionState<SignInState, FormData>(requestCode, null);
   const [pending, start] = useTransition();
   const form = useForm<z.infer<typeof Schema>>({ resolver: zodResolver(Schema), defaultValues: { email: "" }, mode: "onTouched" });
   const err = form.formState.errors.email?.message;
@@ -32,9 +32,9 @@ export function SignInForm({ next }: { next?: string }) {
     >
       <div className="space-y-1.5">
         <Label htmlFor="email" className="text-[13px]">
-          Work email
+          Email address
         </Label>
-        <Input id="email" type="email" autoComplete="email" autoFocus placeholder="you@company.com" aria-invalid={!!err} className="h-10 text-[14px]" {...form.register("email")} />
+        <Input id="email" type="email" autoComplete="email" autoFocus placeholder="you@example.com" aria-invalid={!!err} className="h-10 text-[14px]" {...form.register("email")} />
         {err && (
           <p role="alert" className="text-[12.5px] text-bad">
             {err}
@@ -48,11 +48,11 @@ export function SignInForm({ next }: { next?: string }) {
       )}
       <Button type="submit" size="lg" className="w-full" disabled={pending}>
         {pending ? <CircleNotch className="animate-spin" size={15} /> : null}
-        {pending ? "Sending link…" : "Continue with email"}
+        {pending ? "Sending code…" : "Email me a sign-in code"}
         {!pending && <ArrowRight size={14} />}
       </Button>
       <p className="text-[12px] leading-relaxed text-muted-foreground">
-        We email you a one-time sign-in link. New here? The same link creates your account; your email is verified when you open it.
+        We email you a 6-digit code. New here? Entering it creates your account and verifies your email. Any email address works.
       </p>
     </form>
   );

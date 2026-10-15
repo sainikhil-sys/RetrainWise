@@ -4,6 +4,8 @@ import { body, route, sizeEnum } from "@/lib/api";
 import { DATASETS, POLICIES, REGIMES } from "@/lib/catalog";
 import { notify } from "@/lib/notify";
 import { getJobs } from "@/lib/queries";
+import { reportFor } from "@/lib/report";
+import { reportFinishedJobs } from "@/lib/report-jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +26,7 @@ export const GET = route(async (req, _p, ctx) => {
       });
     }
   }
+  void reportFinishedJobs(ctx.workspace.id, jobs).catch(() => undefined);
   return { jobs };
 });
 
@@ -42,7 +45,19 @@ const Submit = z
 export const POST = route(
   async (req, _p, ctx) => {
     const b = await body(req, Submit);
-    return ctx.engine.call("submit_job", { ...b, actor: ctx.user.email }, { timeoutMs: 120_000, dedupeKey: "submit_job" });
+    const r = await ctx.engine.call<{ job_id: string; created: boolean }>("submit_job", { ...b, actor: ctx.user.email }, { timeoutMs: 120_000, dedupeKey: "submit_job" });
+    if (r.created) {
+      const runs = b.datasets.length * b.policies.length * b.regimes.length * b.seeds.length;
+      reportFor(ctx, {
+        kind: "benchmark_queued",
+        title: "Benchmark queued",
+        summary: `${runs} replays will run in a separate worker. You will get a report with the results when it finishes.`,
+        status: { label: "Queued", tone: "neutral" },
+        facts: [["Job", r.job_id], ["Datasets", b.datasets.join(", ")], ["Policies", String(b.policies.length)], ["Cost regimes", b.regimes.join(", ")], ["Seeds", b.seeds.join(", ")], ["Sample", b.size]],
+        href: "/experiments",
+      });
+    }
+    return r;
   },
   { permission: "experiments.run", limit: { max: 10, windowMs: 60_000 } },
 );

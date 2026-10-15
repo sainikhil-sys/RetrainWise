@@ -16,10 +16,14 @@ export function resolvePython() {
     [venvPython(path.join(ENGINE_DIR, ".venv")), "engine/.venv"],
     [venvPython(path.join(ROOT, ".venv")), ".venv"],
   ];
-  if (win && process.env.LOCALAPPDATA) {
-    candidates.push([venvPython(path.join(process.env.LOCALAPPDATA, "RetrainWise", "venv")), "%LOCALAPPDATA%\\RetrainWise\\venv"]);
-  }
+  // In the user folder (not AppData): visible even to packaged desktop apps,
+  // whose terminals get a private copy of AppData.
   candidates.push([venvPython(path.join(os.homedir(), ".venvs", "retrainwise")), "~/.venvs/retrainwise"]);
+  if (win) {
+    // %LOCALAPPDATA% is missing in some shells and services; fall back to its usual location.
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    candidates.push([venvPython(path.join(local, "RetrainWise", "venv")), "%LOCALAPPDATA%\\RetrainWise\\venv"]);
+  }
   for (const [file, source] of candidates) if (fs.existsSync(file)) return { path: file, source };
   return { path: win ? "python" : "python3", source: "PATH" };
 }

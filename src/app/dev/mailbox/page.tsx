@@ -19,9 +19,9 @@ export default async function DevMailbox() {
   return (
     <AuthFrame>
       <h1 className="font-serif text-[36px] leading-[1.05]">Development outbox</h1>
-      <p className="mt-2 text-[13.5px] text-ink-2">Emails that would have been sent. Configure AUTH_RESEND_KEY to send real email instead.</p>
+      <p className="mt-2 text-[13.5px] text-ink-2">Emails that were not delivered (no mail provider, or the provider rejected them). Sign-in codes are in the subject line. Development only.</p>
       <ul className="mt-6 divide-y divide-border border-y border-border">
-        {mails.length === 0 && <li className="py-6 text-[13.5px] text-muted-foreground">No emails yet. Request a sign-in link first.</li>}
+        {mails.length === 0 && <li className="py-6 text-[13.5px] text-muted-foreground">No emails yet. Request a sign-in code first.</li>}
         {mails.map((m) => (
           <li key={m.id} className="py-4 text-[13.5px]">
             <div className="font-medium">{m.subject}</div>
