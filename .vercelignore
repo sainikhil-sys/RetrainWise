@@ -2,9 +2,9 @@
 .env
 .env.*
 !.env.example
-data/
-node_modules/
-.next/
+/data/
+/node_modules/
+/.next/
 .claude/
 *.tsbuildinfo
 engine/.venv/
