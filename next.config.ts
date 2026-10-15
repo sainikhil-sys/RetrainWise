@@ -17,6 +17,17 @@ const nextConfig: NextConfig = {
   // parent directory. Watching that whole tree caused endless dev rebuilds and
   // page reloads.
   turbopack: { root: path.resolve(".") },
+  // Build output folder (lets a production build run next to the dev server).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+  // Server actions (sign-in) accept the public domain when a proxy serves the app.
+  experimental: {
+    serverActions: {
+      allowedOrigins: [
+        ...(process.env.RETRAINWISE_ALLOWED_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean),
+        ...(process.env.AUTH_URL ? [new URL(process.env.AUTH_URL).host] : []),
+      ],
+    },
+  },
   outputFileTracingRoot: path.resolve("."),
 };
 

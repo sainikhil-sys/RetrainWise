@@ -35,3 +35,4 @@ engine/scratch_*
 .vercel
 .env*
 !.env.example
+.next-prod/

@@ -42,7 +42,8 @@ function guard(req: NextRequest): NextResponse | null {
       return NextResponse.json({ error: "Requests must use Content-Type: application/json." }, { status: 415 });
     }
     const origin = req.headers.get("origin");
-    if (origin && hostname(origin) !== hostname(req.headers.get("host"))) {
+    // Same origin, or the public domain the app is served under (e.g. a proxy in front of it).
+    if (origin && hostname(origin) !== hostname(req.headers.get("host")) && !allowedHost(hostname(origin))) {
       return NextResponse.json({ error: "Cross-origin requests are not allowed." }, { status: 403 });
     }
   }

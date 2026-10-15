@@ -450,5 +450,5 @@ export function wsEngine(workspaceId: string): WsEngine {
 export function workspaceDir(workspaceId: string) {
   if (!/^[a-z0-9]{8,40}$/.test(workspaceId)) throw new EngineError("invalid", "Invalid workspace id");
   // RETRAINWISE_WORKSPACES_DIR puts engine state on a persistent disk in production (must match engine/config.py).
-  return path.join(process.env.RETRAINWISE_WORKSPACES_DIR || path.join(ENGINE_DIR, "workspaces"), workspaceId);
+  return path.join(/*turbopackIgnore: true*/ process.env.RETRAINWISE_WORKSPACES_DIR || path.join(ENGINE_DIR, "workspaces"), workspaceId);
 }

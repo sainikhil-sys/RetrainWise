@@ -19,3 +19,4 @@ engine/*.log
 engine/data_*.csv
 engine/data_*.csv.gz
 engine/scratch_*
+.next-prod/
