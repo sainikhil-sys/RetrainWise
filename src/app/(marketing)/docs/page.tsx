@@ -5,7 +5,7 @@ import { DocPage, DocSection } from "../_components/doc-page";
 
 export const metadata: Metadata = {
   title: "Documentation",
-  description: "How to use RetrainWise: sign-in, onboarding, streams, monitoring, decisions, training, approvals, experiments, roles, email reports and self-hosting.",
+  description: "How to use RetrainWise: sign-in, onboarding, streams, monitoring, decisions, training, approvals, experiments, roles and email reports.",
 };
 
 const TOC = [
@@ -22,7 +22,6 @@ const TOC = [
   { id: "emails", label: "Emails & notifications" },
   { id: "settings", label: "Settings" },
   { id: "keyboard", label: "Keyboard shortcuts" },
-  { id: "self-host", label: "Install & self-host" },
   { id: "faq", label: "FAQ" },
 ];
 
@@ -96,7 +95,7 @@ Net value        = benefit − cost`}</code>
 
       <DocSection id="models" title="Models & training">
         <p>
-          <strong>Train model</strong> runs real training on your machine: choose the data (the active stream or a dataset window), target column, validation split, model type (logistic regression, linear SVM, robust linear classifier, random forest), hyperparameters, preprocessing and seed. You confirm the scope before anything starts. Progress and worker logs stream live, and you can cancel before a candidate is registered.
+          <strong>Train model</strong> runs real training on the RetrainWise engine: choose the data (the active stream or a dataset window), target column, validation split, model type (logistic regression, linear SVM, robust linear classifier, random forest), hyperparameters, preprocessing and seed. You confirm the scope before anything starts. Progress and worker logs stream live, and you can cancel before a candidate is registered.
         </p>
         <ul>
           <li>
@@ -172,20 +171,6 @@ Net value        = benefit − cost`}</code>
             <code>G</code> then a letter: go to a page (for example <code>G M</code> for Monitoring) · <code>?</code>: all shortcuts
           </li>
         </ul>
-      </DocSection>
-
-      <DocSection id="self-host" title="Install & self-host">
-        <p>RetrainWise is local-first: the web app, the database and the Python engine run on your machine.</p>
-        <pre>
-          <code>{`git clone https://github.com/sainikhil-sys/RetrainWise.git
-cd RetrainWise
-npm install
-npm run setup:python   # creates the engine's Python environment
-npm run dev            # http://localhost:3000`}</code>
-        </pre>
-        <p>
-          Configure email in <code>.env</code>: either SMTP (for example Gmail with an app password) or Resend with a verified sending domain. Without either, development builds keep emails in a local outbox at <code>/dev/mailbox</code>. The engine needs a long-running server with Python 3.10–3.12, so host it on a VM or container platform rather than a serverless-only host.
-        </p>
       </DocSection>
 
       <DocSection id="faq" title="FAQ">

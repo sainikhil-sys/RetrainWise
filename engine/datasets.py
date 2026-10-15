@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy.io import arff
 
-from config import ROOT, SAMPLE_SIZES
+from config import DATA_ROOT as ROOT, SAMPLE_SIZES  # dataset caches live in DATA_ROOT (configurable)
 from database import now
 
 USER_AGENT = "RetrainWise/1.0 (research prototype; contact: local user)"

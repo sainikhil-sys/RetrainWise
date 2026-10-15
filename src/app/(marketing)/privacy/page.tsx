@@ -10,7 +10,7 @@ export default function PrivacyPage() {
     <DocPage
       eyebrow="Legal"
       title="Privacy"
-      intro="RetrainWise is local-first software. Whoever runs an installation controls its data. This page describes what the software stores and sends."
+      intro="What RetrainWise stores, why, who can see it and how to remove it."
       updated="15 October 2026"
       toc={[
         { id: "summary", label: "Summary" },

@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { REPO_URL, SELF_HOST_URL, SITE_ONLY } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -40,18 +39,7 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
           ))}
         </nav>
         <div className="hidden items-center gap-2 md:flex">
-          {SITE_ONLY ? (
-            <>
-              <Button variant="ghost" asChild>
-                <a href={REPO_URL} target="_blank" rel="noreferrer noopener">
-                  GitHub
-                </a>
-              </Button>
-              <Button asChild>
-                <Link href={SELF_HOST_URL}>Run it locally</Link>
-              </Button>
-            </>
-          ) : signedIn ? (
+          {signedIn ? (
             <Button asChild>
               <Link href="/overview">Open app</Link>
             </Button>
@@ -79,21 +67,15 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
                 {n.label}
               </Link>
             ))}
-            {SITE_ONLY ? (
-              <a href={REPO_URL} target="_blank" rel="noreferrer noopener" className="border-b border-border py-3 text-[15px]">
-                GitHub
-              </a>
-            ) : (
-              <Link href={signedIn ? "/overview" : "/signin"} onClick={() => setOpen(false)} className="border-b border-border py-3 text-[15px]">
-                {signedIn ? "Open app" : "Sign in"}
-              </Link>
-            )}
+            <Link href={signedIn ? "/overview" : "/signin"} onClick={() => setOpen(false)} className="border-b border-border py-3 text-[15px]">
+              {signedIn ? "Open app" : "Sign in"}
+            </Link>
           </nav>
           {!signedIn && (
             <div className="px-5 pt-2">
               <Button asChild className="w-full">
-                <Link href={SITE_ONLY ? SELF_HOST_URL : "/signin?next=/onboarding"} onClick={() => setOpen(false)}>
-                  {SITE_ONLY ? "Run it locally" : "Get started"}
+                <Link href="/signin?next=/onboarding" onClick={() => setOpen(false)}>
+                  Get started
                 </Link>
               </Button>
             </div>

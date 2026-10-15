@@ -6,7 +6,6 @@ import type { ReactNode } from "react";
 
 import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
-import { REPO_URL, SELF_HOST_URL, SITE_ONLY } from "@/lib/site";
 import { cn } from "@/lib/utils";
 import { HeroPreview } from "./_components/hero-preview";
 import { LandingMotion } from "./_components/landing-motion";
@@ -15,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: { absolute: "RetrainWise — retrain models when the value exceeds the cost" },
-  description: "RetrainWise estimates how much of a model's error a refresh would remove, prices each update option and asks a person to approve before anything changes. Local-first.",
+  description: "RetrainWise estimates how much of a model's error a refresh would remove, prices each update option and asks a person to approve before anything changes.",
 };
 
 function Eyebrow({ children }: { children: ReactNode }) {
@@ -201,7 +200,7 @@ const ROLES = [
 export default async function LandingPage() {
   // Signed-in people never see the marketing page: the app opens on the dashboard
   // (the app layout then sends anyone mid-setup to onboarding).
-  if (!SITE_ONLY && (await auth())?.user) redirect("/overview");
+  if ((await auth())?.user) redirect("/overview");
   return (
     <LandingMotion>
       {/* Hero */}
@@ -221,22 +220,16 @@ export default async function LandingPage() {
           </p>
           <div className="mt-9 flex flex-wrap justify-center gap-3" data-land>
             <Button size="lg" asChild>
-              <Link href={SITE_ONLY ? SELF_HOST_URL : "/signin?next=/onboarding"}>
-                {SITE_ONLY ? "Run it locally" : "Get started"} <ArrowRight />
+              <Link href="/signin?next=/onboarding">
+                Get started <ArrowRight />
               </Link>
             </Button>
             <Button size="lg" variant="secondary" asChild>
-              {SITE_ONLY ? (
-                <a href={REPO_URL} target="_blank" rel="noreferrer noopener">
-                  View on GitHub
-                </a>
-              ) : (
-                <Link href="/signin?next=/overview">Explore the demo</Link>
-              )}
+              <Link href="/signin?next=/overview">Explore the demo</Link>
             </Button>
           </div>
           <p className="mt-4 text-[12.5px] text-muted-foreground" data-land>
-            Local-first ML lifecycle intelligence · runs on your machine · the demo uses a synthetic stream and simulated costs
+            ML lifecycle intelligence · free to start · the demo uses a synthetic stream and simulated costs
           </p>
         </div>
         <div className="relative px-4 pb-20 sm:px-6">
@@ -460,7 +453,7 @@ export default async function LandingPage() {
         </div>
         <ul className="grid gap-x-10 gap-y-6 text-[14px] leading-relaxed sm:grid-cols-2" data-land>
           {[
-            ["Local-first", "Data, models and the engine run on your machine. Datasets are downloaded from their original sources with checksums."],
+            ["Private workspaces", "Each workspace has its own isolated store for data, models and decisions. Datasets come from their original sources with checksums."],
             ["Approval by people", "Roles from Viewer to Admin. The agent and operators can only request; approvals are enforced on the server."],
             ["Immutable audit trail", "Database triggers reject edits and deletions of audit events. Exports are recorded too."],
             ["Passwordless sign-in", "One-time email links, database sessions that expire, rate limits on sign-in and every API."],
@@ -484,8 +477,8 @@ export default async function LandingPage() {
           </h2>
           <div className="flex flex-wrap gap-3" data-land>
             <Button size="lg" variant="secondary" asChild>
-              <Link href={SITE_ONLY ? SELF_HOST_URL : "/signin?next=/onboarding"}>
-                {SITE_ONLY ? "Run it locally" : "Get started"} <ArrowRight />
+              <Link href="/signin?next=/onboarding">
+                Get started <ArrowRight />
               </Link>
             </Button>
             <Button size="lg" variant="ghost" className="text-background hover:bg-background/10 hover:text-background" asChild>

@@ -133,7 +133,7 @@ Net value        = expected benefit − total cost`}</code>
             <ResultsTable rows={v2} caption="Probe-based version: lowest total cost per cell" />
           </>
         ) : null}
-        {!v1 && !v2 && <p>The result files are not included in this deployment. Run the benchmarks locally (see below) to reproduce them.</p>}
+        {!v1 && !v2 && <p>The reference result files are not available in this deployment. Run your own comparison from Experiments in the app.</p>}
         <p className="text-[13px] text-muted-foreground">Means over three seeds. Simulated costs. Several gaps are within one standard deviation; no significance tests were run.</p>
       </DocSection>
 
@@ -167,11 +167,7 @@ Net value        = expected benefit − total cost`}</code>
 
       <DocSection id="reproduce" title="Reproduce">
         <p>
-          Every number above is read from the result files in the repository (<code>engine/results_aggregate.csv</code>, <code>engine/results_v2_aggregate.csv</code>). Run your own comparisons from <strong>Experiments</strong> in the app, or read the full report and methodology in the{" "}
-          <a href="https://github.com/sainikhil-sys/RetrainWise" target="_blank" rel="noreferrer noopener">
-            GitHub repository
-          </a>
-          . The <Link href="/docs">documentation</Link> explains each screen.
+          Every number above is read from the stored benchmark result files, not typed in by hand. Run your own comparisons on your data from <strong>Experiments</strong> in the app; the <Link href="/docs">documentation</Link> explains each screen.
         </p>
       </DocSection>
     </DocPage>

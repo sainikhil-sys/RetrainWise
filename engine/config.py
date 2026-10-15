@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass, field, fields
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA_ROOT = ROOT                        # shared dataset caches (data_<name>.csv.gz + provenance)
-WORKSPACES_ROOT = ROOT / "workspaces"   # one engine database + artifacts per workspace
+# Production deployments point these at a persistent disk (see Dockerfile).
+DATA_ROOT = Path(os.environ["RETRAINWISE_DATASETS_DIR"]) if os.environ.get("RETRAINWISE_DATASETS_DIR") else ROOT  # dataset caches + provenance
+WORKSPACES_ROOT = Path(os.environ["RETRAINWISE_WORKSPACES_DIR"]) if os.environ.get("RETRAINWISE_WORKSPACES_DIR") else ROOT / "workspaces"  # one engine store per workspace
 DB_PATH = ROOT / "retrainwise.db"
 LOG_PATH = ROOT / "retrainwise.log"
 PRICING_PATH = ROOT / "pricing_snapshot.json"

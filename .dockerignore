@@ -1,0 +1,21 @@
+# Secrets and local state never go into the image.
+.env
+.env.*
+!.env.example
+.vercel
+data/
+node_modules/
+.next/
+.claude/
+.git/
+*.tsbuildinfo
+engine/.venv/
+engine/workspaces/
+engine/__pycache__/
+engine/*.db
+engine/*.db-*
+engine/*.joblib
+engine/*.log
+engine/data_*.csv
+engine/data_*.csv.gz
+engine/scratch_*
