@@ -1,3 +1,13 @@
-/** Chart colours shared by server pages and client charts (must not live in a "use client" module). */
-export const SERIES = { blue: "#2a78d6", orange: "#eb6834", aqua: "#1baf7a", yellow: "#eda100", magenta: "#e87ba4",
-  green: "#008300", violet: "#4a3aa7", red: "#e34948", grey: "#8a8984" };
+/** Chart palette (shared by server and client components). */
+export const C = {
+  teal: "#2dd4bf",
+  sky: "#60a5fa",
+  amber: "#f59e0b",
+  rose: "#fb7185",
+  violet: "#a78bfa",
+  emerald: "#34d399",
+  slate: "#94a3b8",
+  pink: "#f472b6",
+  grid: "#1e293b",
+  axis: "#64748b",
+};

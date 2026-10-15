@@ -1,0 +1,19 @@
+# RetrainWise ML engine service on Render (Blueprint). The web app runs on Vercel
+# and calls this service; set the same RETRAINWISE_ENGINE_TOKEN and this
+# service's URL (RETRAINWISE_ENGINE_URL) in the Vercel project.
+services:
+  - type: web
+    name: retrainwise-engine
+    runtime: docker
+    dockerfilePath: ./Dockerfile.engine
+    plan: starter            # persistent disks need a paid instance
+    healthCheckPath: /health
+    disk:
+      name: retrainwise-engine-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: RETRAINWISE_ENGINE_TOKEN
+        generateValue: true  # copy this value into Vercel as RETRAINWISE_ENGINE_TOKEN
+      - key: LLM_API_KEY     # optional fallback key for hosted open-source models
+        sync: false

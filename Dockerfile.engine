@@ -1,0 +1,22 @@
+# RetrainWise ML engine service (Python). The web app on Vercel calls it over HTTPS.
+#
+#   docker build -f Dockerfile.engine -t retrainwise-engine .
+#   docker run -p 8000:8000 -v retrainwise-engine:/data -e RETRAINWISE_ENGINE_TOKEN=<secret> retrainwise-engine
+#
+# Engine databases, model artifacts and downloaded datasets live under /data
+# (mount a persistent disk there).
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    RETRAINWISE_WORKSPACES_DIR=/data/workspaces \
+    RETRAINWISE_DATASETS_DIR=/data/datasets \
+    PORT=8000
+WORKDIR /app
+COPY engine/requirements.txt engine/requirements.txt
+RUN pip install --no-cache-dir -r engine/requirements.txt
+COPY engine /app/engine
+RUN mkdir -p /data
+VOLUME ["/data"]
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s CMD python -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/health',timeout=4)"
+CMD ["sh", "-c", "mkdir -p /data/workspaces /data/datasets && python engine/server.py"]

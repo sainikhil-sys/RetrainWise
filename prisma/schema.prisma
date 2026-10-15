@@ -1,0 +1,215 @@
+// RetrainWise application database (users, sessions, workspaces, roles,
+// notifications, application audit log).
+//
+// Local development uses SQLite (DATABASE_URL="file:../data/app.db").
+// The schema avoids SQLite-only features (no native enums; roles are strings
+// validated in src/lib/authz.ts), so it also runs on PostgreSQL: change
+// `provider` to "postgresql", point DATABASE_URL at the server and create a
+// fresh migration (see README, "Using PostgreSQL").
+//
+// The ML engine keeps its own per-workspace SQLite stores under
+// engine/workspaces/<workspaceId>/ (telemetry, registry, decisions, jobs).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Notification preferences
+  notifyApprovals   Boolean @default(true)
+  notifyDecisions   Boolean @default(true)
+  notifyJobs        Boolean @default(true)
+  emailApprovals    Boolean @default(false)
+  // Email a short report after each action (runs, decisions, training, approvals...)
+  emailReports      Boolean @default(true)
+  // Onboarding callouts the user has dismissed (comma-separated keys)
+  dismissedTips     String  @default("")
+  lastWorkspaceId   String?
+
+  // Profile collected during first-time onboarding
+  jobTitle           String?
+  company            String?
+  teamRole           String? // ml_engineer | data_scientist | mlops | engineering_lead | risk_compliance | other
+  useCase            String? // what they monitor, free text from a short list
+  modelsInProduction String? // "1" | "2-5" | "6-20" | "21+" | "none"
+  profileCompletedAt DateTime?
+
+  accounts      Account[]
+  sessions      Session[]
+  memberships   Membership[]
+  notifications Notification[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Workspace {
+  id            String    @id @default(cuid())
+  name          String
+  slug          String    @unique
+  createdAt     DateTime  @default(now())
+  onboardedAt   DateTime?
+  defaultRegime String    @default("balanced")
+  // Require a different person to approve an action than the one who requested it.
+  requireSeparateApprover Boolean @default(false)
+
+  memberships   Membership[]
+  invitations   Invitation[]
+  notifications Notification[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String // viewer | operator | approver | admin
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String
+  invitedById String
+  createdAt   DateTime  @default(now())
+  acceptedAt  DateTime?
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([email])
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  kind        String // approval | decision | job | outcome | team
+  title       String
+  body        String    @default("")
+  href        String?
+  dedupeKey   String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
+}
+
+// Append-only application audit log (sign-ins, team and workspace changes,
+// exports). UPDATE and DELETE are blocked by database triggers (see migration).
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  actorId     String?
+  actorEmail  String
+  kind        String
+  detail      String   @default("{}")
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+}
+
+// Development mail outbox: used only when no mail provider is configured, so
+// magic links can be opened locally. Never used in production.
+model DevEmail {
+  id        String   @id @default(cuid())
+  to        String
+  subject   String
+  url       String?
+  text      String
+  createdAt DateTime @default(now())
+}
+
+/// One row per work-report email sent (also prevents duplicates, e.g. job completion).
+model EmailReport {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String?
+  kind        String
+  dedupeKey   String   @unique
+  subject     String
+  delivered   String
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// API keys for hosted open-source model providers, per workspace.
+/// The key itself is encrypted (AES-256-GCM, derived from AUTH_SECRET) and never returned to the browser.
+model ProviderKey {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  provider       String    // groq | openrouter | together | huggingface | custom
+  label          String
+  baseUrl        String
+  ciphertext     String
+  last4          String
+  createdById    String?
+  createdByEmail String
+  createdAt      DateTime  @default(now())
+  lastUsedAt     DateTime?
+
+  @@unique([workspaceId, provider])
+  @@index([workspaceId])
+}
+
+/// Wrong sign-in code attempts per email (shared by every server instance).
+model OtpAttempt {
+  email   String   @id
+  count   Int
+  firstAt DateTime
+}

@@ -1,0 +1,712 @@
+"""JSON bridge between the Next.js web application and the RetrainWise engine.
+
+Usage
+  python bridge.py serve            long-lived: one JSON request per stdin line,
+                                    one JSON response per stdout line
+  python bridge.py call <command>   one-shot: JSON arguments on stdin, one JSON
+                                    response on stdout
+
+Only the commands in ``COMMANDS`` can be called. Arguments are validated here
+(types, ranges, enums, identifier formats) before they reach the engine, which
+validates again. stdout is reserved for protocol messages; anything else the
+engine prints goes to stderr. All state changes happen inside the engine's
+SQLite transactions (``pipeline.Lifecycle``, ``jobs``, ``agent``).
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+import traceback
+
+sys.dont_write_bytecode = True
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import jobs  # noqa: E402
+from config import DATA_ROOT, WORKSPACES_ROOT  # noqa: E402
+from database import Database  # noqa: E402
+from agent import explain, ollama_status  # noqa: E402
+from config import REGIMES, ROOT, SAMPLE_SIZES, Settings  # noqa: E402
+from database import dumps, loads  # noqa: E402
+from datasets import (DATASETS, SOURCES, download, is_cached, load, read_provenance,  # noqa: E402
+                      schema_preview, synthetic_metadata)
+from economics import ACTION_LABELS, pricing, rank_actions  # noqa: E402
+from experiments import POLICIES, POLICY_LABELS  # noqa: E402
+from pipeline import Lifecycle, LifecycleError  # noqa: E402
+
+PROTOCOL_VERSION = 2
+_LIFE: Lifecycle | None = None          # legacy single database (CLI and tests)
+_LIVES: dict[str, Lifecycle] = {}
+_WS = re.compile(r"^[a-z0-9]{8,40}$")
+_ID = re.compile(r"^[A-Za-z0-9]{1,32}$")
+_PREFIX = re.compile(r"^[A-Za-z0-9_]{1,80}$")
+_MODEL_TAG = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
+_MODEL_ID = re.compile(r"^[A-Za-z0-9._:/@-]{1,120}$")
+
+
+class BadRequest(ValueError):
+    """Arguments rejected by the bridge before reaching the engine."""
+
+
+_CURRENT: dict = {"workspace": None}
+
+
+def life() -> Lifecycle:
+    """Lifecycle of the workspace named in the current request. Each workspace has
+    its own engine database and artifacts under engine/workspaces/<id>/; dataset
+    caches are shared. Without a workspace the legacy engine/retrainwise.db is used."""
+    global _LIFE
+    ws = _CURRENT["workspace"]
+    if ws is None:
+        if _LIFE is None:
+            _LIFE = Lifecycle()
+        return _LIFE
+    if ws not in _LIVES:
+        root = WORKSPACES_ROOT / ws
+        root.mkdir(parents=True, exist_ok=True)
+        lc = Lifecycle(Database(root / "retrainwise.db"), root, data_root=DATA_ROOT)
+        if lc.db.get_setting("active") is None:
+            lc.db.put_setting("active", Settings().to_dict())
+        lc.recover()
+        jobs.recover(lc.db)
+        _LIVES[ws] = lc
+    return _LIVES[ws]
+
+
+# ------------------------------------------------------------------ validation
+def _int(args: dict, key: str, lo: int, hi: int, default=None) -> int:
+    value = args.get(key, default)
+    if value is None:
+        raise BadRequest(f"{key} is required")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+        raise BadRequest(f"{key} must be an integer")
+    value = int(value)
+    if not lo <= value <= hi:
+        raise BadRequest(f"{key} must be between {lo} and {hi}")
+    return value
+
+
+def _float(args: dict, key: str, lo: float, hi: float, default=None) -> float:
+    value = args.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+        raise BadRequest(f"{key} must be a finite number")
+    if not lo <= float(value) <= hi:
+        raise BadRequest(f"{key} must be between {lo} and {hi}")
+    return float(value)
+
+
+def _choice(args: dict, key: str, options, default=None) -> str:
+    value = args.get(key, default)
+    if value not in options:
+        raise BadRequest(f"{key} must be one of {list(options)}")
+    return value
+
+
+def _ident(args: dict, key: str) -> str:
+    value = args.get(key)
+    if not isinstance(value, str) or not _ID.match(value):
+        raise BadRequest(f"{key} must be an alphanumeric identifier")
+    return value
+
+
+def _text(args: dict, key: str, max_len: int, required: bool = True) -> str:
+    value = args.get(key, "")
+    if not isinstance(value, str):
+        raise BadRequest(f"{key} must be text")
+    value = value.strip()
+    if required and not value:
+        raise BadRequest(f"{key} is required")
+    if len(value) > max_len:
+        raise BadRequest(f"{key} must be at most {max_len} characters")
+    return value
+
+
+def _records(frame: pd.DataFrame) -> list[dict]:
+    """DataFrame -> JSON-safe records (NaN -> None)."""
+    if frame is None or frame.empty:
+        return []
+    return loads(dumps(frame.astype(object).where(pd.notna(frame), None).to_dict(orient="records")))
+
+
+# --------------------------------------------------------------------- commands
+def cmd_ping(args: dict) -> dict:
+    lc = life()
+    if lc.db.get_setting("active") is None:     # persist defaults so readers see real values
+        lc.db.put_setting("active", Settings().to_dict())
+    recovered = lc.recover() if args.get("recover") else None
+    import sklearn
+    return {"engine": "retrainwise", "protocol": PROTOCOL_VERSION, "python": sys.version.split()[0],
+            "executable": sys.executable, "db_path": lc.db.path, "root": str(ROOT),
+            "recovered": recovered, "jobs_interrupted": jobs.recover(lc.db),
+            "packages": {"numpy": np.__version__, "pandas": pd.__version__, "scikit-learn": sklearn.__version__}}
+
+
+def cmd_start_run(args: dict) -> dict:
+    dataset = _choice(args, "dataset", DATASETS)
+    size = _choice(args, "size", SAMPLE_SIZES)
+    seed = _int(args, "seed", 0, 2**31 - 1)
+    if not is_cached(dataset):
+        raise BadRequest(f"{dataset} is not cached. Download it first; synthetic data is never substituted.")
+    regime = args.get("regime")
+    lc = life()
+    if regime is not None:
+        lc.save_settings(lc.settings().replace(regime=_choice(args, "regime", REGIMES)),
+                         actor=_text(args, "actor", 120, False) or "user")
+    run = lc.start_run(dataset, size, seed, actor=_text(args, "actor", 120, False) or "user")
+    return {"id": run["id"], "dataset": run["dataset"], "size": run["size_label"], "rows": run["n_rows"],
+            "seed": run["seed"], "active_version": run["active_version"]}
+
+
+def cmd_process_batches(args: dict) -> dict:
+    run_id = _ident(args, "run_id")
+    position = _int(args, "expected_position", 0, 10**9)
+    count = _int(args, "count", 1, 50, 1)
+    lc = life()
+    processed, autonomy, error = [], [], None
+    for i in range(count):
+        run = lc.run(run_id)
+        if run is None:
+            raise LifecycleError("Unknown run")
+        if run["position"] >= run["n_rows"]:
+            if i == 0:
+                raise LifecycleError("End of stream reached; start a new run")
+            break
+        try:
+            out = lc.process_batch(run_id, position)
+        except Exception as exc:  # keep batches already committed, report the failure
+            if i == 0:
+                raise
+            error = f"{type(exc).__name__}: {exc}"
+            break
+        if out.get("noop"):
+            if i == 0:
+                return {"noop": True, "position": out["position"], "processed": [],
+                        "message": "The stream already advanced past this position (duplicate request ignored)."}
+            break
+        position = out["end_row"]
+        processed.append({k: out.get(k) for k in ("batch_index", "start_row", "end_row", "version", "status",
+                                                  "batch_error", "rolling_error", "labels_revealed",
+                                                  "evaluation_suggested", "trigger_reasons", "max_psi")})
+        if out.get("autonomy"):
+            autonomy.append({"batch_index": out["batch_index"], **out["autonomy"]})
+    return {"noop": False, "processed": processed, "autonomy": autonomy, "position": position, "error": error}
+
+
+def cmd_evaluate(args: dict) -> dict:
+    d = life().evaluate(_ident(args, "run_id"), actor=_text(args, "actor", 120, False) or "user")
+    return {"id": d["id"], "recommended": d["recommended"], "label": ACTION_LABELS[d["recommended"]],
+            "charged": d["evaluation"]["charged"], "note": d["evaluation"]["note"]}
+
+
+def cmd_execute(args: dict) -> dict:
+    if args.get("approved") is not True:
+        raise PermissionError("Explicit approval is required before execution")
+    request_id = args.get("request_id")
+    if request_id is not None:
+        request_id = _int(args, "request_id", 1, 10**9)
+    return life().execute(_ident(args, "decision_id"), _choice(args, "action", ("defer", "partial", "full")),
+                          _text(args, "approver", 120), approved=True, mode="manual", request_id=request_id)
+
+
+def cmd_rollback(args: dict) -> dict:
+    if args.get("approved") is not True:
+        raise PermissionError("Rollback requires explicit approval")
+    return life().rollback(_int(args, "version", 1, 10**9), _text(args, "approver", 120), approved=True,
+                           reason=_text(args, "reason", 500, False))
+
+
+def cmd_dismiss_request(args: dict) -> dict:
+    life().dismiss_request(_int(args, "request_id", 1, 10**9), _text(args, "actor", 120, False) or "user",
+                           reason=_text(args, "reason", 500, False))
+    return {"dismissed": True}
+
+
+def cmd_save_settings(args: dict) -> dict:
+    data = args.get("settings")
+    if not isinstance(data, dict):
+        raise BadRequest("settings must be an object")
+    settings = Settings.from_dict(data)
+    life().save_settings(settings, actor=_text(args, "actor", 120, False) or "user")
+    return {"settings": settings.to_dict()}
+
+
+def cmd_reset_settings(args: dict) -> dict:
+    lc = life()
+    settings = Settings(seed=lc.settings().seed)
+    lc.save_settings(settings, actor=_text(args, "actor", 120, False) or "user")
+    return {"settings": settings.to_dict()}
+
+
+def cmd_settings(args: dict) -> dict:
+    return {"settings": life().settings().to_dict(), "defaults": Settings().to_dict()}
+
+
+def cmd_datasets(args: dict) -> dict:
+    out = []
+    for name in DATASETS:
+        cached = is_cached(name)
+        prov = read_provenance(name) if cached else None
+        src = SOURCES.get(name, {})
+        out.append({
+            "name": name, "cached": cached, "synthetic": name == "synthetic",
+            "title": src.get("title") or "Synthetic drift stream (generated locally)",
+            "page": src.get("page"), "order": src.get("order") or (prov or {}).get("order"),
+            "drop_reason": src.get("drop_reason") or None, "citation": src.get("citation"),
+            "licence": src.get("licence") or (prov or {}).get("licence"),
+            "provenance": {k: v for k, v in (prov or {}).items() if k not in ("dtypes", "columns", "description")}
+            if prov else None,
+        })
+    return {"datasets": out, "sizes": SAMPLE_SIZES}
+
+
+def cmd_dataset_preview(args: dict) -> dict:
+    name = _choice(args, "name", DATASETS)
+    size = _choice(args, "size", SAMPLE_SIZES, "standard")
+    seed = _int(args, "seed", 0, 2**31 - 1, 42)
+    if not is_cached(name):
+        raise FileNotFoundError(f"{name} is not cached. Download it first; synthetic data is never substituted.")
+    # Synthetic: head of the exact stream a run would replay. Real data: first 1,000 cached rows.
+    frame = load(name, size, seed).head(1_000) if name == "synthetic" else load(name, 1_000, seed)
+    meta = synthetic_metadata(SAMPLE_SIZES[size] or 50_000, seed) if name == "synthetic" else None
+    counts = frame["target"].astype(str).value_counts().head(20)
+    return {"name": name, "schema": _records(schema_preview(frame)), "rows": _records(frame.head(10)),
+            "columns": list(frame.columns), "preview_rows": len(frame),
+            "class_balance": [{"label": k, "count": int(v)} for k, v in counts.items()],
+            "synthetic": meta}
+
+
+def cmd_download_dataset(args: dict) -> dict:
+    name = _choice(args, "name", tuple(SOURCES))
+    info = download(name)
+    return {k: info.get(k) for k in ("dataset", "rows", "target_column", "cache_file", "cache_sha256",
+                                     "retrieved_utc", "source_url")}
+
+
+def cmd_what_if(args: dict) -> dict:
+    lc = life()
+    d = lc.decision(_ident(args, "decision_id"))
+    if d is None:
+        raise LifecycleError("Unknown decision")
+    cfg = lc.settings()
+    ev_mult = _float(args, "error_value_multiplier", 0.05, 20, 1.0)
+    hz_mult = _float(args, "horizon_multiplier", 0.05, 20, 1.0)
+    regime = _choice(args, "regime", REGIMES, cfg.regime)
+    alt = cfg.replace(error_value=cfg.error_value * ev_mult, regime=regime,
+                      horizon_predictions=max(1, int(cfg.horizon_predictions * hz_mult)))
+    evidence = {r["action"]: r["evidence"] for r in d["ranked"] if r["action"] != "defer"}
+    ranking = rank_actions(evidence, dict(d["context"], horizon=alt.horizon_predictions), alt)
+    return {"recommended": ranking["recommended"], "label": ACTION_LABELS[ranking["recommended"]],
+            "assumptions": {"error_value": alt.error_value, "horizon_predictions": alt.horizon_predictions,
+                            "regime": regime},
+            "ranked": [{k: r[k] for k in ("action", "label", "feasible", "total_cost", "benefit", "net_value",
+                                          "prob_positive")} | {"failed": [g["name"] for g in r["guardrails"]
+                                                                          if not g["passed"]]}
+                       for r in ranking["ranked"]]}
+
+
+def cmd_reference_window(args: dict) -> dict:
+    lc = life()
+    version = _int(args, "version", 1, 10**9)
+    model = lc.model(version)                  # verifies the registered SHA-256
+    return {"version": version, "train_start": model.train_start, "train_end": model.train_end,
+            "trained_until": model.trained_until, "n_train": model.n_train, "seed": model.seed,
+            "describe": model.describe(), "psi_reference": model.psi_reference}
+
+
+def cmd_explain(args: dict) -> dict:
+    lc = life()
+    d = lc.decision(_ident(args, "decision_id"))
+    if d is None:
+        raise LifecycleError("Unknown decision")
+    mode = _choice(args, "mode", ("deterministic", "ollama", "openai"))
+    settings = lc.settings()
+    model = args.get("model") or (settings.llm_model if mode == "openai" else settings.ollama_model)
+    if not isinstance(model, str) or not _MODEL_ID.match(model):
+        raise BadRequest("model must be a model id such as llama3.1 or llama-3.3-70b-versatile")
+    api_key = _api_key(args)
+    result = explain(lc, d, mode=mode, model=model, api_key=api_key)
+    return {k: result[k] for k in ("report_id", "mode", "status", "iterations", "duration_seconds", "error",
+                                   "requests_prepared")}
+
+
+def cmd_ollama_status(args: dict) -> dict:
+    return ollama_status()
+
+
+def _api_key(args: dict):
+    """Optional provider key sent by the web app for one request (never stored or logged here)."""
+    key = args.get("api_key")
+    if key is None:
+        return None
+    if not isinstance(key, str) or not 8 <= len(key) <= 400 or any(c.isspace() for c in key):
+        raise BadRequest("api_key must be a single token")
+    return key
+
+
+def cmd_llm_status(args: dict) -> dict:
+    """Both providers' status plus the open-source catalog (never the API key).
+    ``base_url`` + ``api_key`` test a specific endpoint and key instead of the saved one."""
+    from agent import OLLAMA_CATALOG, OPENAI_PRESETS, openai_status
+    s = life().settings()
+    base_url = args.get("base_url") or s.llm_base_url
+    if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")) or len(base_url) > 200:
+        raise BadRequest("base_url must be an http(s) URL")
+    status = openai_status(base_url, api_key=_api_key(args))
+    return {"ollama": ollama_status(), "openai": {"base_url": base_url.rstrip("/"), "model": s.llm_model, **status},
+            "catalog": OLLAMA_CATALOG, "presets": OPENAI_PRESETS, "mode": s.agent_mode, "ollama_model": s.ollama_model}
+
+
+def cmd_ollama_pull(args: dict) -> dict:
+    from agent import ollama_pull
+    model = args.get("model")
+    if not isinstance(model, str) or not _MODEL_TAG.match(model):
+        raise BadRequest("model must be an Ollama tag such as llama3.1:8b")
+    return ollama_pull(model)
+
+
+def cmd_submit_job(args: dict) -> dict:
+    lc = life()
+    payload = {"datasets": args.get("datasets"), "policies": args.get("policies"), "regimes": args.get("regimes"),
+               "seeds": args.get("seeds"), "size": args.get("size"), "settings": lc.settings().to_dict()}
+    for key in ("datasets", "policies", "regimes", "seeds"):
+        if not isinstance(payload[key], list):
+            raise BadRequest(f"{key} must be a list")
+    job_id, created = jobs.submit(lc.db, payload, actor=_text(args, "actor", 120, False) or "user", root=DATA_ROOT)
+    return {"job_id": job_id, "created": created}
+
+
+def cmd_submit_training(args: dict) -> dict:
+    """Queue a real training job ("Train model"). Duplicate submissions of the
+    same configuration return the existing job."""
+    lc = life()
+    cfg = args.get("config")
+    if not isinstance(cfg, dict):
+        raise BadRequest("config must be an object")
+    cfg = dict(cfg)
+    incumbent = None
+    if cfg.get("scope") == "run":
+        run = lc.active_run()
+        if run is None:
+            raise LifecycleError("No active run to train for; start a stream or train on a dataset window instead")
+        cfg["run_id"], incumbent = run["id"], run["active_version"]
+    payload = {"config": cfg, "settings": lc.settings().to_dict(), "incumbent_version": incumbent}
+    job_id, created = jobs.submit(lc.db, payload, actor=_text(args, "actor", 120, False) or "user",
+                                  kind="training", root=DATA_ROOT)
+    return {"job_id": job_id, "created": created}
+
+
+def cmd_training_options(args: dict) -> dict:
+    from models import MODEL_TYPES
+    from preprocessing import DEFAULT_PREPROCESSING, IMPUTE_STRATEGIES
+    lc = life()
+    s = lc.settings()
+    run = lc.active_run()
+    return {"model_types": MODEL_TYPES, "preprocessing": DEFAULT_PREPROCESSING, "impute": list(IMPUTE_STRATEGIES),
+            "defaults": {"seed": s.seed, "initial_window": s.initial_size, "train_window": s.train_window,
+                         "validation_fraction": s.validation_fraction, "alpha": s.sgd_alpha, "epochs": s.sgd_epochs},
+            "active_run": {"id": run["id"], "dataset": run["dataset"], "size": run["size_label"],
+                           "active_version": run["active_version"], "position": run["position"]} if run else None}
+
+
+def cmd_revalidate_candidate(args: dict) -> dict:
+    return life().revalidate_candidate(_int(args, "version", 1, 10**9), _text(args, "actor", 120))
+
+
+def cmd_review_candidate(args: dict) -> dict:
+    return life().review_candidate(_int(args, "version", 1, 10**9), _choice(args, "action", ("request", "reject")),
+                                   _text(args, "actor", 120), _text(args, "role", 20), _text(args, "reason", 500, False))
+
+
+def cmd_promote_candidate(args: dict) -> dict:
+    if args.get("approved") is not True:
+        raise PermissionError("Promotion requires explicit approval")
+    return life().promote_candidate(_int(args, "version", 1, 10**9), _text(args, "actor", 120),
+                                    _text(args, "role", 20), approved=True)
+
+
+def cmd_create_request(args: dict) -> dict:
+    """An operator requests an action for a pending decision (reviewed by an approver)."""
+    request_id = life().create_request(_ident(args, "decision_id"), _choice(args, "action", ("defer", "partial", "full")),
+                                       _text(args, "rationale", 1000), _text(args, "actor", 120))
+    return {"request_id": request_id}
+
+
+def cmd_reject_request(args: dict) -> dict:
+    life().dismiss_request(_int(args, "request_id", 1, 10**9), _text(args, "actor", 120),
+                           reason=_text(args, "reason", 500, False), status="rejected")
+    return {"rejected": True}
+
+
+def cmd_delete_job(args: dict) -> dict:
+    """Delete a failed, cancelled or interrupted job and its logs (Admin only in the web app)."""
+    lc = life()
+    job_id = _ident(args, "job_id")
+    with lc.db.transaction() as c:
+        row = c.execute("SELECT status, kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise FileNotFoundError("Unknown job")
+        if row["status"] not in ("failed", "cancelled", "interrupted"):
+            raise LifecycleError("Only failed, cancelled or interrupted jobs can be deleted")
+        c.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
+        c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        lc.db.event("job_deleted", {"job": job_id, "kind": row["kind"], "status": row["status"]}, c,
+                    actor=_text(args, "actor", 120, False) or "user")
+    return {"deleted": True}
+
+
+def cmd_cancel_job(args: dict) -> dict:
+    return {"cancelled": jobs.cancel(life().db, _ident(args, "job_id"),
+                                     actor=_text(args, "actor", 120, False) or "user")}
+
+
+def cmd_recover_jobs(args: dict) -> dict:
+    return {"interrupted": jobs.recover(life().db)}
+
+
+def _result_root():
+    return life().root
+
+
+def _result_prefix(args: dict) -> tuple[str, "Path"]:
+    """Result sets live in the workspace folder; the published reference results
+    (results_*, results_full_*, results_v2_*) live in engine/ and are read-only."""
+    prefix = args.get("prefix")
+    if not isinstance(prefix, str) or not _PREFIX.match(prefix):
+        raise FileNotFoundError("Unknown result set")
+    for root in (life().root, ROOT):
+        if (root / f"{prefix}_summary.csv").exists():
+            return prefix, root
+    raise FileNotFoundError("Unknown result set")
+
+
+def cmd_experiment_sets(args: dict) -> dict:
+    out = []
+    roots = [(life().root, False)] + ([(ROOT, True)] if life().root != ROOT else [])
+    paths = [(p, ref) for root, ref in roots for p in root.glob("*_summary.csv")]
+    for path, reference in sorted(paths, key=lambda pr: (pr[1], -pr[0].stat().st_mtime)):
+        prefix = path.name[:-len("_summary.csv")]
+        if not _PREFIX.match(prefix) or prefix.startswith("scratch"):
+            continue
+        if reference and not prefix.startswith("results"):
+            continue
+        try:
+            summary = pd.read_csv(path, usecols=["dataset", "policy", "regime", "seed", "size"])
+        except (ValueError, OSError):
+            continue
+        out.append({"prefix": prefix, "reference": reference, "runs": len(summary),
+                    "datasets": sorted(summary.dataset.unique().tolist()),
+                    "regimes": sorted(summary.regime.unique().tolist()),
+                    "seeds": sorted(int(s) for s in summary.seed.unique()),
+                    "size": str(summary["size"].iloc[0]) if len(summary) else None,
+                    "modified": path.stat().st_mtime})
+    return {"sets": out}
+
+
+def cmd_experiment_results(args: dict) -> dict:
+    from reporting import aggregate
+    prefix, root = _result_prefix(args)
+    summary = pd.read_csv(root / f"{prefix}_summary.csv")
+    agg = aggregate(summary)
+    details = root / f"{prefix}_details.json"
+    meta = None
+    if details.exists():
+        data = json.loads(details.read_text(encoding="utf-8"))
+        meta = {"configuration": data.get("configuration"), "wall_seconds": data.get("wall_seconds"),
+                "notes": data.get("notes")}
+    charts = sorted(p.name for p in root.glob(f"{prefix}_chart_*.png"))
+    return {"prefix": prefix, "reference": root == ROOT and life().root != ROOT, "summary": _records(summary), "aggregate": _records(agg), "meta": meta,
+            "charts": charts, "has_details": details.exists(), "policy_labels": POLICY_LABELS}
+
+
+def cmd_experiment_traces(args: dict) -> dict:
+    prefix, root = _result_prefix(args)
+    details = root / f"{prefix}_details.json"
+    if not details.exists():
+        raise FileNotFoundError("This result set has no per-batch details")
+    dataset, regime = args.get("dataset"), args.get("regime")
+    seed = args.get("seed")
+    data = json.loads(details.read_text(encoding="utf-8"))
+    runs = data.get("runs") or []
+    options = sorted({(r["summary"]["dataset"], r["summary"]["regime"], int(r["summary"]["seed"])) for r in runs})
+    if not options:
+        return {"options": [], "traces": []}
+    if (dataset, regime, seed) not in options:
+        dataset, regime, seed = options[0]
+    traces = [{"policy": r["summary"]["policy"], "label": r["summary"].get("policy_label"),
+               "points": [{k: t.get(k) for k in ("batch", "end", "error", "rolling_error", "action", "spent")}
+                          for t in r.get("trace") or []]}
+              for r in runs if (r["summary"]["dataset"], r["summary"]["regime"], int(r["summary"]["seed"]))
+              == (dataset, regime, seed)]
+    return {"options": [{"dataset": d, "regime": g, "seed": s} for d, g, s in options],
+            "selected": {"dataset": dataset, "regime": regime, "seed": seed}, "traces": traces}
+
+
+def cmd_pricing(args: dict) -> dict:
+    return pricing()
+
+
+def cmd_result_file(args: dict) -> dict:
+    """Resolve an exportable result file to an absolute path (the web app streams it)."""
+    prefix, root = _result_prefix(args)
+    kind = _choice(args, "kind", ("summary", "aggregate", "details", "chart"))
+    if kind == "chart":
+        chart = args.get("chart")
+        if not isinstance(chart, str) or not re.match(r"^[A-Za-z0-9_]{1,60}$", chart):
+            raise BadRequest("invalid chart name")
+        name = f"{prefix}_chart_{chart}.png"
+    else:
+        name = f"{prefix}_details.json" if kind == "details" else f"{prefix}_{kind}.csv"
+    path = root / name
+    if not path.exists():
+        raise FileNotFoundError(f"{name} does not exist")
+    return {"path": str(path), "name": name}
+
+
+_READ_SQL = re.compile(r"^\s*(SELECT|WITH)\b", re.I)
+
+
+def cmd_query(args: dict) -> dict:
+    """Read-only SQL against the workspace's engine database, for a web app that
+    cannot open the file itself (hosted deployments). Single SELECT/WITH
+    statement, executed on a read-only connection, at most 5,000 rows."""
+    import sqlite3
+    sql = args.get("sql")
+    params = args.get("params") or []
+    if not isinstance(sql, str) or len(sql) > 4000 or not _READ_SQL.match(sql) or ";" in sql.strip().rstrip(";"):
+        raise BadRequest("query must be a single SELECT statement")
+    if not isinstance(params, list) or len(params) > 50 or any(
+            not isinstance(v, (str, int, float)) and v is not None for v in params):
+        raise BadRequest("params must be a short list of scalars")
+    path = life().db.path            # creates and migrates the workspace database if needed
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in con.execute(sql, params).fetchmany(5000)]
+    finally:
+        con.close()
+    return {"rows": rows}
+
+
+def cmd_read_result_file(args: dict) -> dict:
+    """Contents of an exportable result file (base64), for hosted web apps."""
+    import base64
+    info = cmd_result_file(args)
+    from pathlib import Path
+    data = Path(info["path"]).read_bytes()
+    if len(data) > 40_000_000:
+        raise BadRequest("file too large to export through the engine service")
+    return {"name": info["name"], "data": base64.b64encode(data).decode("ascii")}
+
+
+def cmd_catalog(args: dict) -> dict:
+    return {"datasets": list(DATASETS), "sizes": SAMPLE_SIZES, "regimes": list(REGIMES), "policies": list(POLICIES),
+            "policy_labels": POLICY_LABELS, "action_labels": ACTION_LABELS}
+
+
+COMMANDS = {
+    "ping": cmd_ping, "start_run": cmd_start_run, "process_batches": cmd_process_batches,
+    "evaluate": cmd_evaluate, "execute": cmd_execute, "rollback": cmd_rollback,
+    "dismiss_request": cmd_dismiss_request, "save_settings": cmd_save_settings,
+    "reset_settings": cmd_reset_settings, "settings": cmd_settings, "datasets": cmd_datasets,
+    "dataset_preview": cmd_dataset_preview, "download_dataset": cmd_download_dataset, "what_if": cmd_what_if,
+    "reference_window": cmd_reference_window, "explain": cmd_explain, "ollama_status": cmd_ollama_status,
+    "submit_job": cmd_submit_job, "cancel_job": cmd_cancel_job, "recover_jobs": cmd_recover_jobs,
+    "experiment_sets": cmd_experiment_sets, "experiment_results": cmd_experiment_results,
+    "experiment_traces": cmd_experiment_traces, "pricing": cmd_pricing, "catalog": cmd_catalog,
+    "submit_training": cmd_submit_training, "query": cmd_query, "read_result_file": cmd_read_result_file, "llm_status": cmd_llm_status, "ollama_pull": cmd_ollama_pull, "training_options": cmd_training_options,
+    "revalidate_candidate": cmd_revalidate_candidate, "review_candidate": cmd_review_candidate,
+    "promote_candidate": cmd_promote_candidate, "create_request": cmd_create_request,
+    "reject_request": cmd_reject_request, "delete_job": cmd_delete_job, "result_file": cmd_result_file,
+}
+
+
+def handle(command, args) -> dict:
+    """Run one command; never raises. Error kinds map to HTTP statuses in the web app."""
+    try:
+        if command not in COMMANDS:
+            raise BadRequest(f"Unknown command {command!r}")
+        if not isinstance(args, dict):
+            raise BadRequest("args must be an object")
+        ws = args.get("workspace")
+        if ws is not None and (not isinstance(ws, str) or not _WS.match(ws)):
+            raise BadRequest("workspace must be a lowercase alphanumeric identifier")
+        _CURRENT["workspace"] = ws
+        try:
+            return {"ok": True, "result": COMMANDS[command](args)}
+        finally:
+            _CURRENT["workspace"] = None
+    except PermissionError as exc:
+        return {"ok": False, "kind": "forbidden", "error": str(exc)}
+    except LifecycleError as exc:
+        return {"ok": False, "kind": "conflict", "error": str(exc)}
+    except FileNotFoundError as exc:
+        return {"ok": False, "kind": "not_found", "error": str(exc)}
+    except (BadRequest, ValueError, TypeError) as exc:
+        return {"ok": False, "kind": "invalid", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - every failure is reported, and audited
+        detail = f"{type(exc).__name__}: {exc}"
+        try:
+            life().db.event("bridge_error", {"command": str(command)[:40], "error": detail[:500],
+                                             "trace": traceback.format_exc()[-1500:]}, actor="web")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "kind": "internal", "error": detail[:1000]}
+
+
+def _encode(response: dict) -> str:
+    try:
+        return dumps(response)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"ok": False, "kind": "internal", "error": f"Unserialisable result: {exc}"})
+
+
+def serve() -> None:
+    protocol = sys.stdout
+    sys.stdout = sys.stderr                  # stray prints must not corrupt the protocol stream
+    protocol.write(json.dumps({"ready": True, "protocol": PROTOCOL_VERSION}) + "\n")
+    protocol.flush()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+            rid = request.get("id")
+            response = handle(request.get("command"), request.get("args", {}))
+        except (json.JSONDecodeError, AttributeError) as exc:
+            rid, response = None, {"ok": False, "kind": "invalid", "error": f"Malformed request: {exc}"}
+        response["id"] = rid
+        protocol.write(_encode(response) + "\n")
+        protocol.flush()
+
+
+def main(argv: list[str]) -> int:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+    if len(argv) == 2 and argv[1] == "serve":
+        serve()
+        return 0
+    if len(argv) == 3 and argv[1] == "call":
+        raw = sys.stdin.read().strip()
+        try:
+            args = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as exc:
+            print(json.dumps({"ok": False, "kind": "invalid", "error": f"Malformed arguments: {exc}"}))
+            return 2
+        protocol = sys.stdout
+        sys.stdout = sys.stderr
+        response = handle(argv[2], args)
+        protocol.write(_encode(response) + "\n")
+        protocol.flush()
+        return 0 if response["ok"] else 1
+    print("usage: python bridge.py serve | python bridge.py call <command>", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
