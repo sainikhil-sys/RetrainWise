@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
+import { REPO_URL, SELF_HOST_URL, SITE_ONLY } from "@/lib/site";
 import { cn } from "@/lib/utils";
 import { HeroPreview } from "./_components/hero-preview";
 import { LandingMotion } from "./_components/landing-motion";
@@ -200,7 +201,7 @@ const ROLES = [
 export default async function LandingPage() {
   // Signed-in people never see the marketing page: the app opens on the dashboard
   // (the app layout then sends anyone mid-setup to onboarding).
-  if ((await auth())?.user) redirect("/overview");
+  if (!SITE_ONLY && (await auth())?.user) redirect("/overview");
   return (
     <LandingMotion>
       {/* Hero */}
@@ -220,12 +221,18 @@ export default async function LandingPage() {
           </p>
           <div className="mt-9 flex flex-wrap justify-center gap-3" data-land>
             <Button size="lg" asChild>
-              <Link href="/signin?next=/onboarding">
-                Get started <ArrowRight />
+              <Link href={SITE_ONLY ? SELF_HOST_URL : "/signin?next=/onboarding"}>
+                {SITE_ONLY ? "Run it locally" : "Get started"} <ArrowRight />
               </Link>
             </Button>
             <Button size="lg" variant="secondary" asChild>
-              <Link href="/signin?next=/overview">Explore the demo</Link>
+              {SITE_ONLY ? (
+                <a href={REPO_URL} target="_blank" rel="noreferrer noopener">
+                  View on GitHub
+                </a>
+              ) : (
+                <Link href="/signin?next=/overview">Explore the demo</Link>
+              )}
             </Button>
           </div>
           <p className="mt-4 text-[12.5px] text-muted-foreground" data-land>
@@ -477,8 +484,8 @@ export default async function LandingPage() {
           </h2>
           <div className="flex flex-wrap gap-3" data-land>
             <Button size="lg" variant="secondary" asChild>
-              <Link href="/signin?next=/onboarding">
-                Get started <ArrowRight />
+              <Link href={SITE_ONLY ? SELF_HOST_URL : "/signin?next=/onboarding"}>
+                {SITE_ONLY ? "Run it locally" : "Get started"} <ArrowRight />
               </Link>
             </Button>
             <Button size="lg" variant="ghost" className="text-background hover:bg-background/10 hover:text-background" asChild>

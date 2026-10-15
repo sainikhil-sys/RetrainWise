@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { auth } from "@/auth";
+import { SITE_ONLY } from "@/lib/site";
 import { SiteHeader } from "./_components/site-header";
 
 const FOOTER = [
@@ -10,7 +11,7 @@ const FOOTER = [
     links: [
       { href: "/#product", label: "Overview" },
       { href: "/#how-it-works", label: "How it works" },
-      { href: "/signin?next=/onboarding", label: "Get started" },
+      { href: SITE_ONLY ? "/docs#self-host" : "/signin?next=/onboarding", label: SITE_ONLY ? "Install" : "Get started" },
     ],
   },
   {
@@ -32,7 +33,7 @@ const FOOTER = [
 ];
 
 export default async function MarketingLayout({ children }: { children: ReactNode }) {
-  const session = await auth();
+  const session = SITE_ONLY ? null : await auth();
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-50 focus:rounded focus:bg-foreground focus:px-3 focus:py-1.5 focus:text-background">

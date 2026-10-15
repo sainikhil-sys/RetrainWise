@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { auth } from "@/auth";
+import { SITE_ONLY } from "@/lib/site";
 import { LandingMotion } from "../_components/landing-motion";
 import { ContactForm } from "./contact-form";
 
@@ -10,7 +11,7 @@ export const metadata: Metadata = { title: "Contact", description: "Questions, b
 export const dynamic = "force-dynamic";
 
 export default async function ContactPage() {
-  const session = await auth();
+  const session = SITE_ONLY ? null : await auth();
   return (
     <LandingMotion>
       <section className="relative overflow-hidden">
@@ -25,7 +26,7 @@ export default async function ContactPage() {
                 { icon: BookOpen, title: "Documentation", text: "How each screen works, roles, emails and self-hosting.", href: "/docs", external: false },
                 { icon: GithubLogo, title: "GitHub", text: "Source code, issues and discussions.", href: "https://github.com/sainikhil-sys/RetrainWise", external: true },
                 { icon: Bug, title: "Bug reports", text: "Include the page, what you expected and what happened.", href: "https://github.com/sainikhil-sys/RetrainWise/issues", external: true },
-                { icon: ShieldCheck, title: "Security", text: "Choose the Security topic in the form. Please do not open public issues for vulnerabilities.", href: null, external: false },
+                { icon: ShieldCheck, title: "Security", text: "Please do not post vulnerability details publicly. Ask for a private channel and we will reply.", href: null, external: false },
               ].map((c) => (
                 <li key={c.title} className="flex gap-3.5">
                   <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
@@ -52,7 +53,17 @@ export default async function ContactPage() {
             </ul>
           </div>
           <div data-land>
-            <ContactForm defaultEmail={session?.user?.email ?? undefined} />
+            {SITE_ONLY || !process.env.CONTACT_EMAIL ? (
+              <div className="rounded-xl border border-border p-8">
+                <h2 className="font-serif text-[26px]">Open an issue on GitHub</h2>
+                <p className="mt-2 text-[14px] leading-relaxed text-ink-2">The fastest way to reach us about questions, bugs and ideas. For security reports, please describe the issue without exploit details and ask for a private channel.</p>
+                <a href="https://github.com/sainikhil-sys/RetrainWise/issues/new" target="_blank" rel="noreferrer noopener" className="mt-6 inline-flex h-10 items-center rounded-md bg-foreground px-5 text-[14px] font-medium text-background">
+                  New issue
+                </a>
+              </div>
+            ) : (
+              <ContactForm defaultEmail={session?.user?.email ?? undefined} />
+            )}
           </div>
         </div>
       </section>
