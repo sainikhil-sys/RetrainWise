@@ -212,9 +212,16 @@ a cloud VM) or your own server.
 * Put it behind HTTPS and add the domain to `RETRAINWISE_ALLOWED_HOSTS`.
 * For PostgreSQL, switch the Prisma provider and `DATABASE_URL`; the engine databases stay on local disk.
 
-**Vercel**: the marketing pages build and serve on Vercel, but the application itself does not work there. Serverless
-functions cannot run the Python engine process or keep SQLite files between requests. Use one of the hosts above
-for the full app (Vercel can still host the public site if you split it out).
+**Vercel (public site only).** Vercel cannot run the Python engine process or keep SQLite files, so it hosts the
+public site: landing, docs, research, privacy, terms and contact. Build with `NEXT_PUBLIC_SITE_ONLY=1`; app and sign-in
+routes then redirect to the self-hosting guide, the API is disabled and the calls to action point to installing locally.
+
+```bash
+vercel deploy --prod --build-env NEXT_PUBLIC_SITE_ONLY=1 --env NEXT_PUBLIC_SITE_ONLY=1
+```
+
+`.vercelignore` keeps `.env`, databases and engine runtime files out of the upload. Live site:
+<https://retrainwise.vercel.app>.
 
 ## Project layout
 
