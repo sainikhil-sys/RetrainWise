@@ -203,36 +203,41 @@ jobs, the bridge, and the probe/DiD/renewal/VOI logic). Engine only: `npm run te
 
 ## Deployment
 
-The complete app runs as **one container** (`Dockerfile`): the Next.js server, the Python engine and SQLite. Everything
-that must survive restarts lives under `/data`, so mount a persistent disk there.
+RetrainWise runs on **Vercel** as two projects that share one **Neon PostgreSQL** database:
 
-**Render (one click).** `render.yaml` is a Blueprint: in Render choose *New → Blueprint*, select this repository and
-branch, fill in the requested values, and apply. Render builds the image, attaches a 5 GB disk at `/data`, generates
-`AUTH_SECRET` and checks `/api/health`. Persistent disks need a paid instance.
+| Project | Root | What it runs |
+|---|---|---|
+| `retrainwise` | repository root | The Next.js app. `npm run vercel-build` switches Prisma to PostgreSQL, syncs the schema, installs the audit triggers and builds. |
+| `retrainwise-engine` | `engine/` | The Python engine as a Vercel Python Function (`engine/app.py`, Python 3.12). |
 
-**Any Docker host** (Railway, Fly.io, a VM):
+* **Engine state.** Serverless functions have no persistent disk, so each workspace's engine folder (its SQLite
+  database and model artifacts) and every downloaded dataset are stored in PostgreSQL (`EngineStore`,
+  `EngineDataset`) by `engine/cloud_store.py`. A request restores the folder when it is stale, runs the command and
+  writes it back under a per-workspace advisory lock.
+* **Engine connection.** The web project sets `RETRAINWISE_ENGINE_URL` to the engine's URL. Both projects derive the
+  same bearer token from the shared database URL, so no secret is copied between them (set
+  `RETRAINWISE_ENGINE_TOKEN` on both to override it).
+* **Jobs.** Training jobs and benchmarks run inside the request, so a single job must finish within the 300-second
+  function limit; payloads are limited to 4.5 MB.
+* **Language models.** Ollama is not reachable from Vercel; use hosted open-source models with an API key
+  (*Agent & audit → Model API keys*).
 
-```bash
-docker build -t retrainwise .
-docker run -p 3000:3000 -v retrainwise-data:/data --env-file .env.production retrainwise
-```
-
-Environment for production (set them in the host's dashboard; never commit them):
+Environment for the web project (set in Vercel; never commit them):
 
 | Variable | Value |
 |---|---|
-| `AUTH_SECRET` | Long random string (Render generates it) |
-| `AUTH_URL` | The public URL, e.g. `https://retrainwise.onrender.com` |
+| `DATABASE_URL`, `DATABASE_URL_UNPOOLED` | Added by the Neon integration (connect it to both projects) |
+| `AUTH_SECRET` | Long random string |
+| `AUTH_URL` | The public URL, e.g. `https://retrainwise.vercel.app` |
 | `SMTP_*` or `AUTH_RESEND_KEY` + `EMAIL_FROM` | Email delivery; with Resend, `EMAIL_FROM` must use a verified domain to reach every address |
 | `CONTACT_EMAIL` | Inbox for the contact form |
-| `LLM_API_KEY` | Optional, hosted open-source models |
-| `RETRAINWISE_ALLOWED_HOSTS` | Extra public domains that proxy to the app (for example a Vercel domain) |
+| `RETRAINWISE_ENGINE_URL` | The engine project's URL, e.g. `https://retrainwise-engine.vercel.app` |
+| `LLM_API_KEY` | Optional default key for hosted open-source models |
 
-`DATABASE_URL`, `RETRAINWISE_PYTHON`, `RETRAINWISE_WORKSPACES_DIR` and `RETRAINWISE_DATASETS_DIR` are preset in the image.
+`node scripts/vercel-env.mjs` uploads the values from `.env.vercel` (falling back to `.env`) and redeploys.
 
-**Vercel.** Vercel's serverless functions cannot run the Python engine or keep the databases, so the app runs on the
-container host and a Vercel domain can forward to it with a rewrite in `vercel.json`. Add that domain to
-`RETRAINWISE_ALLOWED_HOSTS` (or use it as `AUTH_URL`).
+**Container alternative.** `Dockerfile` runs the whole app in one container with SQLite under `/data` (mount a
+persistent disk there); `render.yaml` deploys it on Render. Jobs then run in background workers with no time limit.
 
 ## Project layout
 
