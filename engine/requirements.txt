@@ -9,3 +9,5 @@ matplotlib==3.10.3
 python-pptx==1.0.2
 # Optional: used only by tests to cross-check the built-in ADWIN implementation.
 river==0.22.0
+# Serverless hosting (engine/cloud_store.py): PostgreSQL driver
+pg8000==1.31.2

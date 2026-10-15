@@ -1,0 +1,17 @@
+# RetrainWise ML engine as a Vercel Python Function (see app.py).
+[project]
+name = "retrainwise-engine"
+version = "1.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "numpy==2.2.6",
+  "pandas==2.2.3",
+  "scipy==1.15.3",
+  "scikit-learn==1.6.1",
+  "joblib==1.5.1",
+  "matplotlib==3.10.3",
+  "pg8000==1.31.2",
+]
+
+[tool.vercel]
+entrypoint = "app:app"

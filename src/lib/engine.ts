@@ -1,6 +1,7 @@
 import "server-only";
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -445,6 +446,17 @@ export const ENGINE_MODE: "local" | "remote" | "missing" = REMOTE_URL ? "remote"
 
 const remoteInFlight = new Set<string>();
 
+/**
+ * Shared secret for the engine service: RETRAINWISE_ENGINE_TOKEN, or (when both
+ * run on Vercel with the same Neon database) derived from the database URL, so
+ * no token has to be copied between projects. Must match engine/app.py.
+ */
+function engineToken(): string {
+  if (process.env.RETRAINWISE_ENGINE_TOKEN) return process.env.RETRAINWISE_ENGINE_TOKEN;
+  const url = process.env.DATABASE_URL_UNPOOLED || process.env.POSTGRES_URL_NON_POOLING || process.env.DATABASE_URL || "";
+  return url ? createHash("sha256").update(`retrainwise-engine-token:${url}`).digest("hex") : "";
+}
+
 async function remoteCall<T>(command: Command, args: Record<string, unknown>, opts: { timeoutMs?: number; dedupeKey?: string; isolated?: boolean; env?: Record<string, string> } = {}): Promise<T> {
   if (!REMOTE_URL) {
     throw new EngineError("unavailable", "The ML engine is not connected yet. Set RETRAINWISE_ENGINE_URL and RETRAINWISE_ENGINE_TOKEN for this deployment.");
@@ -458,7 +470,7 @@ async function remoteCall<T>(command: Command, args: Record<string, unknown>, op
     try {
       res = await fetch(`${REMOTE_URL}/call`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.RETRAINWISE_ENGINE_TOKEN ?? ""}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${engineToken()}` },
         body: JSON.stringify({ command, args, isolated: !!opts.isolated, env: opts.env }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000),
         cache: "no-store",

@@ -116,6 +116,12 @@ def submit(db: Database, payload: dict, actor: str = "user", kind: str = "benchm
 
 
 def _launch(db: Database, job_id: str) -> None:
+    if os.environ.get("RETRAINWISE_INLINE_JOBS") == "1":
+        # Serverless hosting has no background processes: run the job now, inside
+        # this request (the web app shows its final state and logs).
+        import worker
+        worker.run(job_id, db.path)
+        return
     kwargs = {"cwd": str(ROOT), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
               "stderr": subprocess.DEVNULL, "close_fds": True}
     if os.name == "nt":

@@ -213,3 +213,19 @@ model OtpAttempt {
   count   Int
   firstAt DateTime
 }
+
+/// Engine state for serverless hosting (engine/cloud_store.py): each workspace's
+/// engine folder (SQLite database + model artifacts) as one compressed archive.
+model EngineStore {
+  workspace String   @id
+  version   Int
+  archive   Bytes
+  updated   DateTime @default(now())
+}
+
+/// Downloaded datasets shared by all workspaces (engine/cloud_store.py).
+model EngineDataset {
+  name    String   @id
+  archive Bytes
+  updated DateTime @default(now())
+}

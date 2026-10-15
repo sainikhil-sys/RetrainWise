@@ -1,0 +1,12 @@
+# Engine deployment: code and reference results only, never local state.
+.venv/
+workspaces/
+__pycache__/
+*.db
+*.db-*
+*.joblib
+*.log
+data_*.csv
+data_*.csv.gz
+scratch_*
+test_project.py
