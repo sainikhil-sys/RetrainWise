@@ -15,6 +15,8 @@ import { can } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getActiveRun, getEventActors, getEventKinds, getLatestDecision, getReports, getRequests, getSettings, getToolCalls, searchEvents } from "@/lib/queries";
 import { AgentPanel } from "./_components/agent-panel";
+import { ApiKeys } from "./_components/api-keys";
+import { PROVIDERS, listKeys } from "@/lib/provider-keys";
 
 export const metadata: Metadata = { title: "Agent & audit" };
 export const dynamic = "force-dynamic";
@@ -54,6 +56,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
 
   const [settings, run, reports, requests, kinds, actors] = await Promise.all([getSettings(ws), getActiveRun(ws), getReports(ws, 5), getRequests(ws), getEventKinds(ws), getEventActors(ws)]);
   const decision = run ? await getLatestDecision(ws, run.id) : null;
+  const apiKeys = await listKeys(ws);
   const calls = await getToolCalls(ws, reports.map((r) => r.id));
   const agentRequests = requests.filter((r) => r.report_id != null).slice(0, 8);
 
@@ -111,6 +114,14 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
           </ul>
         </Section>
       </div>
+
+      <Section
+        id="api-keys"
+        title="Model API keys"
+        description="Keys for hosted open-source models (Groq, OpenRouter, Together, Hugging Face or any OpenAI-compatible endpoint). The agent uses the key whose endpoint matches the selected one."
+      >
+        <ApiKeys initial={apiKeys} providers={PROVIDERS.map((p) => ({ ...p }))} activeBaseUrl={settings.llm_base_url} canManage={can(ctx.role, "settings.engine")} />
+      </Section>
 
       {agentRequests.length > 0 && (
         <Section title="Agent-prepared requests">

@@ -226,16 +226,20 @@ export function AgentPanel({
             ) : (
               <Status tone="warn">
                 {status.openai.error ?? "Endpoint not reachable"}
-                {!status.openai.key_configured && " · set LLM_API_KEY in .env and restart"}
+                {!status.openai.key_configured && " · add an API key below"}
               </Status>
             )}
           </p>
           <Callout title="API key">
-            Hosted providers need a key. Put it in <code className="font-mono text-[12px]">.env</code> as <code className="font-mono text-[12px]">LLM_API_KEY=&quot;…&quot;</code> and restart the app. It is never stored in the database or shown in the app.
+            Hosted providers need a key. Add it under{" "}
+            <a href="#api-keys" className="underline underline-offset-4">
+              Model API keys
+            </a>{" "}
+            below; it is stored encrypted for this workspace.
             {preset?.key_url && (
               <>
                 {" "}
-                Get a key from{" "}
+                Get one from{" "}
                 <a href={preset.key_url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-0.5 underline underline-offset-4">
                   {preset.name} <ArrowSquareOut size={12} />
                 </a>

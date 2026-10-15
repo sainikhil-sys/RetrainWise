@@ -49,6 +49,7 @@ export function OnboardingFlow({
   const shown = profileDone ? step + 1 : 0; // position in the stepper (Profile is first)
   const [wsName, setWsName] = useState("");
   const [datasets, setDatasets] = useState<Dataset[] | null>(null);
+  const [engineError, setEngineError] = useState<string | null>(null);
   const [dataset, setDataset] = useState<DatasetName>("synthetic");
   const [regime, setRegime] = useState<string>(workspace?.defaultRegime ?? "balanced");
   const [pending, setPending] = useState(false);
@@ -58,7 +59,7 @@ export function OnboardingFlow({
     if (!workspace || !profileDone) return;
     api<{ datasets: Dataset[] }>("/api/datasets")
       .then((r) => setDatasets(r.datasets))
-      .catch((e: Error) => toast.error("Could not read datasets", { description: e.message }));
+      .catch((e: Error) => setEngineError(e.message));
   }, [workspace, profileDone]);
 
   const selected = datasets?.find((d) => d.name === dataset);
@@ -201,7 +202,14 @@ export function OnboardingFlow({
                     )}
                   </label>
                 ))}
-                {!datasets && (
+                {!datasets && engineError && (
+                  <div className="py-5 text-[13.5px] leading-relaxed">
+                    <div className="font-medium">The ML engine is not connected yet</div>
+                    <p className="mt-1 text-ink-2">You can finish setting up your workspace now. Streams, training and decisions become available as soon as the engine is connected.</p>
+                    <p className="mt-1 text-[12px] text-muted-foreground">{engineError}</p>
+                  </div>
+                )}
+                {!datasets && !engineError && (
                   <div className="flex items-center gap-2 py-6 text-[13px] text-muted-foreground">
                     <CircleNotch className="animate-spin" /> Starting the ML engine and reading datasets…
                   </div>
@@ -215,7 +223,7 @@ export function OnboardingFlow({
                   <span className="font-medium text-foreground">Real datasets</span> (Electricity, Airlines, Covertype) are downloaded from their original sources with checksums and provenance. Their drift is real and unlabeled, so outcomes are less predictable.
                 </p>
               </div>
-              <Nav onBack={workspace ? undefined : () => setStep(0)} onNext={() => setStep(2)} nextDisabled={!selected?.cached} />
+              <Nav onBack={workspace ? undefined : () => setStep(0)} onNext={() => setStep(2)} nextDisabled={!selected?.cached && !engineError} />
             </section>
           )}
 
@@ -261,11 +269,11 @@ export function OnboardingFlow({
                 ))}
               </dl>
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <Button size="lg" onClick={() => void finish(true)} disabled={pending}>
+                <Button size="lg" onClick={() => void finish(true)} disabled={pending || !!engineError}>
                   {pending ? <CircleNotch className="animate-spin" /> : <Sparkle />} Start monitored run
                 </Button>
-                <Button variant="ghost" onClick={() => void finish(false)} disabled={pending}>
-                  Skip for now
+                <Button variant={engineError ? "default" : "ghost"} onClick={() => void finish(false)} disabled={pending}>
+                  {engineError ? "Finish setup" : "Skip for now"}
                 </Button>
                 <Button variant="ghost" onClick={() => setStep(2)} disabled={pending}>
                   <ArrowLeft /> Back

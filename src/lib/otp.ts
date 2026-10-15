@@ -20,19 +20,17 @@ function hash(code: string) {
   return createHash("sha256").update(`${code}${process.env.AUTH_SECRET ?? ""}`).digest("hex");
 }
 
-// Wrong-guess counters per email. In-memory: correct for a single server
-// process (the local-first setup); use a shared store when running several.
-const attempts = new Map<string, { n: number; first: number }>();
-
-function failures(email: string) {
-  const a = attempts.get(email);
-  if (!a || Date.now() - a.first > OTP_MINUTES * 60_000) return 0;
-  return a.n;
+// Wrong-guess counters live in the database so every server instance (several
+// serverless instances on Vercel) shares them.
+async function failures(email: string) {
+  const a = await prisma.otpAttempt.findUnique({ where: { email } });
+  if (!a || Date.now() - a.firstAt.getTime() > OTP_MINUTES * 60_000) return 0;
+  return a.count;
 }
 
 /** Forget wrong guesses (a fresh code was sent, or sign-in succeeded). */
-export function resetOtpAttempts(email: string) {
-  attempts.delete(email);
+export async function resetOtpAttempts(email: string) {
+  await prisma.otpAttempt.deleteMany({ where: { email } });
 }
 
 export type OtpCheck = { ok: true } | { ok: false; reason: "invalid" | "expired" | "locked"; remaining: number };
@@ -43,13 +41,17 @@ export type OtpCheck = { ok: true } | { ok: false; reason: "invalid" | "expired"
  * code for the email is deleted, so guessing cannot continue.
  */
 export async function checkOtp(email: string, code: string): Promise<OtpCheck> {
-  if (failures(email) >= OTP_MAX_ATTEMPTS) return { ok: false, reason: "locked", remaining: 0 };
+  const before = await failures(email);
+  if (before >= OTP_MAX_ATTEMPTS) return { ok: false, reason: "locked", remaining: 0 };
   const row = await prisma.verificationToken.findFirst({ where: { identifier: email, token: hash(code) } });
   if (row && row.expires.getTime() > Date.now()) return { ok: true };
 
-  const a = attempts.get(email);
-  const n = failures(email) + 1;
-  attempts.set(email, { n, first: a && n > 1 ? a.first : Date.now() });
+  const n = before + 1;
+  await prisma.otpAttempt.upsert({
+    where: { email },
+    create: { email, count: 1, firstAt: new Date() },
+    update: before === 0 ? { count: 1, firstAt: new Date() } : { count: { increment: 1 } },
+  });
   if (n >= OTP_MAX_ATTEMPTS) {
     await prisma.verificationToken.deleteMany({ where: { identifier: email } });
     return { ok: false, reason: "locked", remaining: 0 };

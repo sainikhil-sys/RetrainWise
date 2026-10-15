@@ -54,6 +54,8 @@ export class EngineError extends Error {
 export type Command =
   | "ping"
   | "llm_status"
+  | "query"
+  | "read_result_file"
   | "ollama_pull"
   | "start_run"
   | "process_batches"
@@ -368,7 +370,7 @@ class EngineDaemon {
   }
 
   /** One-shot process for slow, self-contained commands. */
-  async isolatedCall<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number): Promise<T> {
+  async isolatedCall<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number, extraEnv: Record<string, string> = {}): Promise<T> {
     if (this.isBusy(key)) throw new EngineError("busy", "This action is already in progress. Wait for it to finish.");
     this.isolated.set(key, command);
     try {
@@ -376,7 +378,7 @@ class EngineDaemon {
         const python = resolvePython();
         const proc = spawn(/*turbopackIgnore: true*/ python.path, ["-B", BRIDGE, "call", command], {
           cwd: ENGINE_DIR,
-          env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" },
+          env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1", ...extraEnv },
           windowsHide: true,
           shell: false,
         });
@@ -427,12 +429,79 @@ export function engineCall<T>(command: Command, args: Record<string, unknown> = 
 
 export type WsEngine = {
   call<T>(command: Command, args?: Record<string, unknown>, opts?: CallOptions): Promise<T>;
-  isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number): Promise<T>;
+  isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number, env?: Record<string, string>): Promise<T>;
   workspace: string;
 };
 
+/* ------------------------------------------------------------------ remote engine
+ * Hosted deployments (for example Vercel) cannot run Python. They set
+ * RETRAINWISE_ENGINE_URL and RETRAINWISE_ENGINE_TOKEN, and every command goes to
+ * the engine service (engine/server.py) over HTTPS instead of a local process.
+ */
+const REMOTE_URL = (process.env.RETRAINWISE_ENGINE_URL || "").replace(/\/$/, "");
+
+/** "local": Python on this machine; "remote": engine service; "missing": hosted without an engine. */
+export const ENGINE_MODE: "local" | "remote" | "missing" = REMOTE_URL ? "remote" : process.env.VERCEL ? "missing" : "local";
+
+const remoteInFlight = new Set<string>();
+
+async function remoteCall<T>(command: Command, args: Record<string, unknown>, opts: { timeoutMs?: number; dedupeKey?: string; isolated?: boolean; env?: Record<string, string> } = {}): Promise<T> {
+  if (!REMOTE_URL) {
+    throw new EngineError("unavailable", "The ML engine is not connected yet. Set RETRAINWISE_ENGINE_URL and RETRAINWISE_ENGINE_TOKEN for this deployment.");
+  }
+  if (opts.dedupeKey && remoteInFlight.has(opts.dedupeKey)) {
+    throw new EngineError("busy", "This action is already in progress. Wait for it to finish.");
+  }
+  if (opts.dedupeKey) remoteInFlight.add(opts.dedupeKey);
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${REMOTE_URL}/call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.RETRAINWISE_ENGINE_TOKEN ?? ""}` },
+        body: JSON.stringify({ command, args, isolated: !!opts.isolated, env: opts.env }),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000),
+        cache: "no-store",
+      });
+    } catch (e) {
+      const err = e as Error;
+      throw new EngineError(err.name === "TimeoutError" ? "timeout" : "unavailable", `The ML engine service is not reachable (${err.message}).`);
+    }
+    if (res.status === 401) throw new EngineError("unavailable", "The ML engine service rejected this deployment's RETRAINWISE_ENGINE_TOKEN.");
+    const msg = (await res.json().catch(() => null)) as { ok?: boolean; result?: unknown; kind?: string; error?: string } | null;
+    if (!msg) throw new EngineError("internal", `The ML engine service returned HTTP ${res.status}.`);
+    if (msg.ok) return msg.result as T;
+    throw toError(msg);
+  } finally {
+    if (opts.dedupeKey) remoteInFlight.delete(opts.dedupeKey);
+  }
+}
+
+/** Status of the remote engine service for the status indicator. */
+export async function remoteStatus(): Promise<Omit<EngineStatus, "stderrTail">> {
+  const base = { python: null, pythonSource: ENGINE_MODE === "remote" ? "engine service" : null, active: null, queued: 0, isolated: [], info: null };
+  if (!REMOTE_URL) return { ...base, state: "failed", lastError: "The ML engine is not connected yet." };
+  try {
+    const res = await fetch(`${REMOTE_URL}/health`, { signal: AbortSignal.timeout(8_000), cache: "no-store" });
+    return res.ok ? { ...base, state: "ready", lastError: null } : { ...base, state: "failed", lastError: `Engine service HTTP ${res.status}` };
+  } catch (e) {
+    return { ...base, state: "failed", lastError: `Engine service not reachable (${(e as Error).message})` };
+  }
+}
+
 /** Engine client scoped to one workspace (its own engine database and artifacts). */
 export function wsEngine(workspaceId: string): WsEngine {
+  if (ENGINE_MODE !== "local") {
+    return {
+      workspace: workspaceId,
+      call<T>(command: Command, args: Record<string, unknown> = {}, opts: CallOptions = {}) {
+        return remoteCall<T>(command, { ...args, workspace: workspaceId }, { timeoutMs: opts.timeoutMs, dedupeKey: opts.dedupeKey ? `${workspaceId}:${opts.dedupeKey}` : undefined });
+      },
+      isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number, env?: Record<string, string>) {
+        return remoteCall<T>(command, { ...args, workspace: workspaceId }, { timeoutMs, dedupeKey: `${workspaceId}:${key}`, isolated: true, env });
+      },
+    };
+  }
   return {
     workspace: workspaceId,
     call<T>(command: Command, args: Record<string, unknown> = {}, opts: CallOptions = {}) {
@@ -441,8 +510,8 @@ export function wsEngine(workspaceId: string): WsEngine {
         dedupeKey: opts.dedupeKey ? `${workspaceId}:${opts.dedupeKey}` : undefined,
       });
     },
-    isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number) {
-      return engine().isolatedCall<T>(command, { ...args, workspace: workspaceId }, `${workspaceId}:${key}`, timeoutMs);
+    isolated<T>(command: Command, args: Record<string, unknown>, key: string, timeoutMs: number, env?: Record<string, string>) {
+      return engine().isolatedCall<T>(command, { ...args, workspace: workspaceId }, `${workspaceId}:${key}`, timeoutMs, env);
     },
   };
 }

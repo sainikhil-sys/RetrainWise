@@ -27,7 +27,7 @@ export const POST = route<{ id: string }>(
     let requester: string | null = null;
     if (b.requestId) {
       const db = await getDb(ctx.workspace.id);
-      const row = db.prepare("SELECT prepared_by FROM execution_requests WHERE id=? AND decision_id=?").get(b.requestId, decisionId) as
+      const row = await db.get("SELECT prepared_by FROM execution_requests WHERE id=? AND decision_id=?", b.requestId, decisionId) as
         | { prepared_by: string }
         | undefined;
       if (!row) throw new AuthError(404, "Request not found for this decision");

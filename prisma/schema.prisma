@@ -187,3 +187,29 @@ model EmailReport {
 
   @@index([userId, createdAt])
 }
+
+/// API keys for hosted open-source model providers, per workspace.
+/// The key itself is encrypted (AES-256-GCM, derived from AUTH_SECRET) and never returned to the browser.
+model ProviderKey {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  provider       String    // groq | openrouter | together | huggingface | custom
+  label          String
+  baseUrl        String
+  ciphertext     String
+  last4          String
+  createdById    String?
+  createdByEmail String
+  createdAt      DateTime  @default(now())
+  lastUsedAt     DateTime?
+
+  @@unique([workspaceId, provider])
+  @@index([workspaceId])
+}
+
+/// Wrong sign-in code attempts per email (shared by every server instance).
+model OtpAttempt {
+  email   String   @id
+  count   Int
+  firstAt DateTime
+}

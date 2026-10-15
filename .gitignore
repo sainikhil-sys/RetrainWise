@@ -36,3 +36,4 @@ engine/scratch_*
 .env*
 !.env.example
 .next-prod/
+prisma/postgres.prisma

@@ -342,9 +342,9 @@ def openai_provider(base_url: str, model: str, deadline: float, api_key=None):
     return call
 
 
-def openai_status(base_url: str, timeout: float = 6.0) -> dict:
+def openai_status(base_url: str, timeout: float = 6.0, api_key=None) -> dict:
     """Reachability and model list of an OpenAI-compatible endpoint (the key is never returned)."""
-    key = llm_api_key()
+    key = api_key or llm_api_key()
     headers = {"User-Agent": "RetrainWise"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -517,7 +517,7 @@ def deterministic_report(decision: dict, evidence: dict, settings=None) -> str:
 
 def explain(lifecycle, decision: dict, mode: str = "deterministic", model: str = "llama3.1",
             provider=None, timeout_seconds: int | None = None, max_iterations: int | None = None,
-            base_url: str | None = None) -> dict:
+            base_url: str | None = None, api_key: str | None = None) -> dict:
     """Produce and store an explanation for ``decision``.
 
     ``provider`` (a callable ``(messages, tools) -> message``) is injectable for
@@ -541,7 +541,8 @@ def explain(lifecycle, decision: dict, mode: str = "deterministic", model: str =
         if provider is not None:
             call = provider
         elif mode == "openai":
-            call = openai_provider(base_url or settings.llm_base_url, model, deadline=started + timeout_seconds)
+            call = openai_provider(base_url or settings.llm_base_url, model, deadline=started + timeout_seconds,
+                                   api_key=api_key)
         else:
             call = ollama_provider(model, deadline=started + timeout_seconds)
         messages = [{"role": "system", "content": SYSTEM_PROMPT},

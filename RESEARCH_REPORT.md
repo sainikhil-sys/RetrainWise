@@ -206,7 +206,7 @@ that scales with stream length would change this result; we did not test that.
   * `qwen2.5-coder` once recommended a different action from the engine (now caught by a deterministic consistency
     check), and later misstated a cost.
 
-  Every LLM report is shown next to the deterministic verified figures (REQUIREMENTS_CHECKLIST.md).
+  Every LLM report is shown next to the deterministic verified figures.
 
 ## 8. Future work
 

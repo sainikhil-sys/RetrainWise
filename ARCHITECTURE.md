@@ -161,6 +161,6 @@ flowchart LR
 * A model that answers before reading `get_action_evaluations` is asked once to call it.
 * A deterministic **consistency check** compares the action named in the LLM's Recommendation section with the engine's
   recommendation. If they disagree, the report is stored as `completed_with_warning` and a visible warning is shown at
-  the top. These safeguards were added after the real Ollama tests described in REQUIREMENTS_CHECKLIST.md.
+  the top. These safeguards were added after real local-model tests.
 * Secrets: none are required. Nothing is sent off the machine except the explicit dataset downloads and, if enabled,
   requests to a local Ollama server on 127.0.0.1.

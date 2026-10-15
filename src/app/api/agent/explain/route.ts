@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { body, ident, route } from "@/lib/api";
 import { notify } from "@/lib/notify";
+import { prisma } from "@/lib/prisma";
+import { keyForEndpoint } from "@/lib/provider-keys";
 import { getSettings } from "@/lib/queries";
 import { reportFor } from "@/lib/report";
 
@@ -17,7 +19,15 @@ const Explain = z.object({ decisionId: ident, mode: z.enum(["deterministic", "ol
 export const POST = route(
   async (req, _p, ctx) => {
     const b = await body(req, Explain);
-    const args = { decision_id: b.decisionId, mode: b.mode, model: b.model };
+    const args: Record<string, unknown> = { decision_id: b.decisionId, mode: b.mode, model: b.model };
+    if (b.mode === "openai") {
+      // Use the workspace's saved key for the configured endpoint (falls back to LLM_API_KEY on the engine).
+      const saved = await keyForEndpoint(ctx.workspace.id, (await getSettings(ctx.workspace.id)).llm_base_url);
+      if (saved) {
+        args.api_key = saved.key;
+        await prisma.providerKey.update({ where: { id: saved.id }, data: { lastUsedAt: new Date() } });
+      }
+    }
     let r: { report_id: number; requests_prepared: number[] };
     if (b.mode !== "deterministic") {
       const settings = await getSettings(ctx.workspace.id);

@@ -14,7 +14,7 @@ export const POST = route<{ id: string }>(
     const requestId = z.coerce.number().int().positive().parse(id);
     await body(req, z.object({ approved: z.literal(true, { message: "Confirm the approval to continue" }) }));
     const db = await getDb(ctx.workspace.id);
-    const r = db.prepare("SELECT decision_id, action, prepared_by, status FROM execution_requests WHERE id=?").get(requestId) as
+    const r = await db.get("SELECT decision_id, action, prepared_by, status FROM execution_requests WHERE id=?", requestId) as
       | { decision_id: string; action: string; prepared_by: string; status: string }
       | undefined;
     if (!r) throw new AuthError(404, "Unknown request");

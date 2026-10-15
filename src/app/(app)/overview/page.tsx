@@ -9,6 +9,7 @@ import { EmptyState, MetricStrip, NextStep, PageHeader, Section, SimLabel, Statu
 import { TipCallout } from "@/components/rw-client";
 import { Button } from "@/components/ui/button";
 import { requirePage } from "@/lib/authz";
+import { ENGINE_MODE } from "@/lib/engine";
 import { ACTION_LABELS } from "@/lib/catalog";
 import { ago, money, num, pct, signed } from "@/lib/format";
 import { chartAnnotations, lifecycleStage, nextStep, riskLevel, stateSentence, timelineFromEvents, v } from "@/lib/narrative";
@@ -30,6 +31,16 @@ const STAGES = [
 
 export default async function OverviewPage() {
   const ctx = await requirePage("/overview");
+  if (ENGINE_MODE === "missing") {
+    return (
+      <Reveal>
+        <PageHeader title="Model health" description={`Welcome to ${ctx.workspace.name}.`} />
+        <EmptyState icon={Pulse} title="The ML engine is not connected yet" className="py-16">
+          Your account and workspace are ready. Monitoring, decisions, training and experiments start working as soon as the engine service is connected to this deployment. Meanwhile you can invite your team in Settings and complete your profile.
+        </EmptyState>
+      </Reveal>
+    );
+  }
   const ws = ctx.workspace.id;
   const [settings, run, models, events] = await Promise.all([getSettings(ws), getActiveRun(ws), getAllModels(ws), getEvents(ws, { limit: 10 })]);
   const [tel, decision, registry, decisions, labels] = run

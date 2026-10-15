@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 
-import { wsEngine, workspaceDir } from "./engine";
+import { ENGINE_MODE, wsEngine, workspaceDir } from "./engine";
 
 /**
  * Read-only access to a workspace's engine database
@@ -31,7 +31,7 @@ function hasSchema(db: Database.Database): boolean {
   return row.n === 5;
 }
 
-export async function getDb(workspaceId: string): Promise<Database.Database> {
+async function localDb(workspaceId: string): Promise<Database.Database> {
   const cached = cache.get(workspaceId);
   if (cached && cached.open) return cached;
   const file = path.join(workspaceDir(workspaceId), "retrainwise.db");
@@ -44,6 +44,30 @@ export async function getDb(workspaceId: string): Promise<Database.Database> {
   }
   cache.set(workspaceId, db);
   return db;
+}
+
+/** Read-only access to one workspace's engine data, wherever the engine runs. */
+export type EngineDb = {
+  all(sql: string, ...params: unknown[]): Promise<unknown[]>;
+  get(sql: string, ...params: unknown[]): Promise<unknown>;
+};
+
+/**
+ * Local installs read the engine's SQLite file directly (fast, read-only).
+ * Hosted deployments send the same read-only SELECT to the engine service.
+ */
+export async function getDb(workspaceId: string): Promise<EngineDb> {
+  if (ENGINE_MODE !== "local") {
+    const engine = wsEngine(workspaceId);
+    const all = async (sql: string, ...params: unknown[]) =>
+      (await engine.call<{ rows: unknown[] }>("query", { sql, params }, { timeoutMs: 60_000 })).rows;
+    return { all, get: async (sql, ...params) => (await all(sql, ...params))[0] };
+  }
+  const db = await localDb(workspaceId);
+  return {
+    all: async (sql, ...params) => db.prepare(sql).all(...params),
+    get: async (sql, ...params) => db.prepare(sql).get(...params),
+  };
 }
 
 export function parseJson<T>(text: unknown, fallback: T): T {

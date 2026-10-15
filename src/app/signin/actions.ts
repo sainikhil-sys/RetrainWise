@@ -35,7 +35,7 @@ async function pending(): Promise<{ email: string; next: string } | null> {
 async function sendCode(email: string, next: string): Promise<string | null> {
   try {
     await signIn("resend", { email, redirectTo: next, redirect: false });
-    resetOtpAttempts(email);
+    await resetOtpAttempts(email);
     return null;
   } catch (err) {
     if (err instanceof AuthError) return "We could not send the sign-in code. Check the mail configuration and try again.";
@@ -80,7 +80,7 @@ export async function verifyCode(_prev: VerifyState, form: FormData): Promise<Ve
     if (r.reason === "expired") return { error: "This code has expired. Request a new code." };
     return { error: `That code is not correct. ${r.remaining} attempt${r.remaining === 1 ? "" : "s"} left.` };
   }
-  resetOtpAttempts(p.email);
+  await resetOtpAttempts(p.email);
   // The pending-email cookie is left to expire: deleting it here re-renders
   // /signin/verify, which then redirects away before the browser can follow
   // the callback. It holds no secret, and the code is single use.

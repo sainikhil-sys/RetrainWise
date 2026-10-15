@@ -1,39 +1,19 @@
-# One-click deployment of the complete RetrainWise app on Render (Blueprint).
-# Render builds the Dockerfile, mounts a persistent disk at /data and asks for
-# the values marked `sync: false` when you create the Blueprint.
+# RetrainWise ML engine service on Render (Blueprint). The web app runs on Vercel
+# and calls this service; set the same RETRAINWISE_ENGINE_TOKEN and this
+# service's URL (RETRAINWISE_ENGINE_URL) in the Vercel project.
 services:
   - type: web
-    name: retrainwise
+    name: retrainwise-engine
     runtime: docker
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./Dockerfile.engine
     plan: starter            # persistent disks need a paid instance
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     disk:
-      name: retrainwise-data
+      name: retrainwise-engine-data
       mountPath: /data
       sizeGB: 5
     envVars:
-      - key: AUTH_SECRET
-        generateValue: true
-      - key: AUTH_URL          # public URL, e.g. https://retrainwise.onrender.com
-        sync: false
-      - key: SESSION_MAX_AGE_DAYS
-        value: "7"
-      # Email: SMTP (any address) and/or Resend (needs a verified domain)
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: AUTH_RESEND_KEY
-        sync: false
-      - key: EMAIL_FROM
-        sync: false
-      - key: CONTACT_EMAIL
-        sync: false
-      # Optional: hosted open-source models for the agent
-      - key: LLM_API_KEY
+      - key: RETRAINWISE_ENGINE_TOKEN
+        generateValue: true  # copy this value into Vercel as RETRAINWISE_ENGINE_TOKEN
+      - key: LLM_API_KEY     # optional fallback key for hosted open-source models
         sync: false

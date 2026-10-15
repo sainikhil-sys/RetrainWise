@@ -15,7 +15,8 @@
     "db:studio": "prisma studio",
     "setup:python": "node scripts/setup-python.mjs",
     "test:engine": "node scripts/run-engine-tests.mjs",
-    "test": "npm run typecheck && npm run test:engine"
+    "test": "npm run typecheck && npm run test:engine",
+    "vercel-build": "node scripts/vercel-build.mjs"
   },
   "engines": {
     "node": ">=20.9"

@@ -19,3 +19,5 @@ engine/*_details.json
 engine/*_chart_*.png
 engine/__pycache__/
 .next-prod/
+.agents/
+skills-lock.json

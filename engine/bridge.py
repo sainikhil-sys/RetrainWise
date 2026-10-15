@@ -325,7 +325,8 @@ def cmd_explain(args: dict) -> dict:
     model = args.get("model") or (settings.llm_model if mode == "openai" else settings.ollama_model)
     if not isinstance(model, str) or not _MODEL_ID.match(model):
         raise BadRequest("model must be a model id such as llama3.1 or llama-3.3-70b-versatile")
-    result = explain(lc, d, mode=mode, model=model)
+    api_key = _api_key(args)
+    result = explain(lc, d, mode=mode, model=model, api_key=api_key)
     return {k: result[k] for k in ("report_id", "mode", "status", "iterations", "duration_seconds", "error",
                                    "requests_prepared")}
 
@@ -334,11 +335,26 @@ def cmd_ollama_status(args: dict) -> dict:
     return ollama_status()
 
 
+def _api_key(args: dict):
+    """Optional provider key sent by the web app for one request (never stored or logged here)."""
+    key = args.get("api_key")
+    if key is None:
+        return None
+    if not isinstance(key, str) or not 8 <= len(key) <= 400 or any(c.isspace() for c in key):
+        raise BadRequest("api_key must be a single token")
+    return key
+
+
 def cmd_llm_status(args: dict) -> dict:
-    """Both providers' status plus the open-source catalog (never the API key)."""
+    """Both providers' status plus the open-source catalog (never the API key).
+    ``base_url`` + ``api_key`` test a specific endpoint and key instead of the saved one."""
     from agent import OLLAMA_CATALOG, OPENAI_PRESETS, openai_status
     s = life().settings()
-    return {"ollama": ollama_status(), "openai": {"base_url": s.llm_base_url, "model": s.llm_model, **openai_status(s.llm_base_url)},
+    base_url = args.get("base_url") or s.llm_base_url
+    if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")) or len(base_url) > 200:
+        raise BadRequest("base_url must be an http(s) URL")
+    status = openai_status(base_url, api_key=_api_key(args))
+    return {"ollama": ollama_status(), "openai": {"base_url": base_url.rstrip("/"), "model": s.llm_model, **status},
             "catalog": OLLAMA_CATALOG, "presets": OPENAI_PRESETS, "mode": s.agent_mode, "ollama_model": s.ollama_model}
 
 
@@ -548,6 +564,42 @@ def cmd_result_file(args: dict) -> dict:
     return {"path": str(path), "name": name}
 
 
+_READ_SQL = re.compile(r"^\s*(SELECT|WITH)\b", re.I)
+
+
+def cmd_query(args: dict) -> dict:
+    """Read-only SQL against the workspace's engine database, for a web app that
+    cannot open the file itself (hosted deployments). Single SELECT/WITH
+    statement, executed on a read-only connection, at most 5,000 rows."""
+    import sqlite3
+    sql = args.get("sql")
+    params = args.get("params") or []
+    if not isinstance(sql, str) or len(sql) > 4000 or not _READ_SQL.match(sql) or ";" in sql.strip().rstrip(";"):
+        raise BadRequest("query must be a single SELECT statement")
+    if not isinstance(params, list) or len(params) > 50 or any(
+            not isinstance(v, (str, int, float)) and v is not None for v in params):
+        raise BadRequest("params must be a short list of scalars")
+    path = life().db.path            # creates and migrates the workspace database if needed
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in con.execute(sql, params).fetchmany(5000)]
+    finally:
+        con.close()
+    return {"rows": rows}
+
+
+def cmd_read_result_file(args: dict) -> dict:
+    """Contents of an exportable result file (base64), for hosted web apps."""
+    import base64
+    info = cmd_result_file(args)
+    from pathlib import Path
+    data = Path(info["path"]).read_bytes()
+    if len(data) > 40_000_000:
+        raise BadRequest("file too large to export through the engine service")
+    return {"name": info["name"], "data": base64.b64encode(data).decode("ascii")}
+
+
 def cmd_catalog(args: dict) -> dict:
     return {"datasets": list(DATASETS), "sizes": SAMPLE_SIZES, "regimes": list(REGIMES), "policies": list(POLICIES),
             "policy_labels": POLICY_LABELS, "action_labels": ACTION_LABELS}
@@ -563,7 +615,7 @@ COMMANDS = {
     "submit_job": cmd_submit_job, "cancel_job": cmd_cancel_job, "recover_jobs": cmd_recover_jobs,
     "experiment_sets": cmd_experiment_sets, "experiment_results": cmd_experiment_results,
     "experiment_traces": cmd_experiment_traces, "pricing": cmd_pricing, "catalog": cmd_catalog,
-    "submit_training": cmd_submit_training, "llm_status": cmd_llm_status, "ollama_pull": cmd_ollama_pull, "training_options": cmd_training_options,
+    "submit_training": cmd_submit_training, "query": cmd_query, "read_result_file": cmd_read_result_file, "llm_status": cmd_llm_status, "ollama_pull": cmd_ollama_pull, "training_options": cmd_training_options,
     "revalidate_candidate": cmd_revalidate_candidate, "review_candidate": cmd_review_candidate,
     "promote_candidate": cmd_promote_candidate, "create_request": cmd_create_request,
     "reject_request": cmd_reject_request, "delete_job": cmd_delete_job, "result_file": cmd_result_file,

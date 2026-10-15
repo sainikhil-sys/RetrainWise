@@ -158,7 +158,7 @@ Browser ──► Next.js pages (server components; engine data read-only from p
   `UPDATE` and `DELETE` through database triggers.
 
 More detail: [ARCHITECTURE.md](ARCHITECTURE.md), [METHODOLOGY.md](METHODOLOGY.md), [DATASETS.md](DATASETS.md),
-[DEMO_GUIDE.md](DEMO_GUIDE.md), [RESEARCH_REPORT.md](RESEARCH_REPORT.md), [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
+[RESEARCH_REPORT.md](RESEARCH_REPORT.md), [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
 
 ## Pages
 
@@ -203,25 +203,36 @@ jobs, the bridge, and the probe/DiD/renewal/VOI logic). Engine only: `npm run te
 
 ## Deployment
 
-RetrainWise runs a **long-lived Python engine** next to the web server and keeps state in SQLite files, so it needs a
-host with a persistent disk and Python 3.10–3.12: a VM, a container platform (Docker on Fly.io, Railway, Render,
-a cloud VM) or your own server.
+The complete app runs as **one container** (`Dockerfile`): the Next.js server, the Python engine and SQLite. Everything
+that must survive restarts lives under `/data`, so mount a persistent disk there.
 
-* Set the variables above (production requires `AUTH_SECRET`, `AUTH_URL` and an email provider).
-* `npm ci && npm run setup:python && npm run build && npm run start`.
-* Put it behind HTTPS and add the domain to `RETRAINWISE_ALLOWED_HOSTS`.
-* For PostgreSQL, switch the Prisma provider and `DATABASE_URL`; the engine databases stay on local disk.
+**Render (one click).** `render.yaml` is a Blueprint: in Render choose *New → Blueprint*, select this repository and
+branch, fill in the requested values, and apply. Render builds the image, attaches a 5 GB disk at `/data`, generates
+`AUTH_SECRET` and checks `/api/health`. Persistent disks need a paid instance.
 
-**Vercel (public site only).** Vercel cannot run the Python engine process or keep SQLite files, so it hosts the
-public site: landing, docs, research, privacy, terms and contact. Build with `NEXT_PUBLIC_SITE_ONLY=1`; app and sign-in
-routes then redirect to the self-hosting guide, the API is disabled and the calls to action point to installing locally.
+**Any Docker host** (Railway, Fly.io, a VM):
 
 ```bash
-vercel deploy --prod --build-env NEXT_PUBLIC_SITE_ONLY=1 --env NEXT_PUBLIC_SITE_ONLY=1
+docker build -t retrainwise .
+docker run -p 3000:3000 -v retrainwise-data:/data --env-file .env.production retrainwise
 ```
 
-`.vercelignore` keeps `.env`, databases and engine runtime files out of the upload. Live site:
-<https://retrainwise.vercel.app>.
+Environment for production (set them in the host's dashboard; never commit them):
+
+| Variable | Value |
+|---|---|
+| `AUTH_SECRET` | Long random string (Render generates it) |
+| `AUTH_URL` | The public URL, e.g. `https://retrainwise.onrender.com` |
+| `SMTP_*` or `AUTH_RESEND_KEY` + `EMAIL_FROM` | Email delivery; with Resend, `EMAIL_FROM` must use a verified domain to reach every address |
+| `CONTACT_EMAIL` | Inbox for the contact form |
+| `LLM_API_KEY` | Optional, hosted open-source models |
+| `RETRAINWISE_ALLOWED_HOSTS` | Extra public domains that proxy to the app (for example a Vercel domain) |
+
+`DATABASE_URL`, `RETRAINWISE_PYTHON`, `RETRAINWISE_WORKSPACES_DIR` and `RETRAINWISE_DATASETS_DIR` are preset in the image.
+
+**Vercel.** Vercel's serverless functions cannot run the Python engine or keep the databases, so the app runs on the
+container host and a Vercel domain can forward to it with a rewrite in `vercel.json`. Add that domain to
+`RETRAINWISE_ALLOWED_HOSTS` (or use it as `AUTH_URL`).
 
 ## Project layout
 
