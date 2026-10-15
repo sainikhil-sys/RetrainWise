@@ -22,10 +22,11 @@ export function CopyCode() {
     try {
       await navigator.clipboard.writeText(code);
     } catch {
-      // Older browsers: select the code so the user can copy it themselves.
+      // Clipboard API blocked: select the code and try the legacy copy command;
+      // if that fails too, the selection lets the user copy it themselves.
       const el = document.getElementById("signin-code");
       if (el) window.getSelection()?.selectAllChildren(el);
-      return;
+      if (!document.execCommand?.("copy")) return;
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
