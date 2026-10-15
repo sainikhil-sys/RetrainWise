@@ -33,6 +33,15 @@ export function OtpForm({ maskedEmail }: { maskedEmail: string }) {
     }
   }, [state]);
 
+  // "Continue to sign in" from the email's copy page passes the code as #code=123456.
+  useEffect(() => {
+    const match = /^#code=(\d{6})$/.exec(window.location.hash);
+    if (!match) return;
+    history.replaceState(null, "", window.location.pathname);
+    setAt(0, match[1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (resendState?.sent) setCooldown(30);
   }, [resendState]);

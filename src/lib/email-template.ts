@@ -58,14 +58,15 @@ export function renderEmail(c: EmailContent): { html: string; text: string } {
     .filter(Boolean)
     .map((p) => `<p style="margin:0 0 14px;font-size:14.5px;line-height:1.65;color:${INK2}">${esc(p)}</p>`)
     .join("");
+  // The code is one text run (not one cell per digit) so selecting or long-pressing
+  // it copies all six digits; "Copy code" opens a page with a real copy button
+  // (the code travels in the URL fragment, which browsers never send to the server).
   const code = c.code
-    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 22px"><tr>${c.code
-        .split("")
-        .map(
-          (d) =>
-            `<td style="padding:0 4px 0 0"><div style="width:46px;height:58px;line-height:58px;text-align:center;border:1px solid ${LINE};border-radius:10px;background:${PAPER};font-family:${MONO};font-size:28px;font-weight:700;color:${INK}">${esc(d)}</div></td>`,
-        )
-        .join("")}</tr></table>`
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 12px"><tr><td style="padding:14px 22px 14px 26px;border:1px solid ${LINE};border-radius:12px;background:${PAPER}"><span style="font-family:${MONO};font-size:32px;line-height:38px;font-weight:700;letter-spacing:0.28em;color:${INK};-webkit-user-select:all;user-select:all">${esc(c.code)}</span></td></tr></table>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 22px"><tr>
+        <td style="border:1px solid ${INK};border-radius:8px;background:#ffffff"><a href="${base}/signin/code#${encodeURIComponent(c.code)}" style="display:inline-block;padding:9px 16px;font-size:13px;font-weight:600;color:${INK};text-decoration:none;border-radius:8px;white-space:nowrap">Copy code</a></td>
+        <td style="padding:0 0 0 12px;font-size:12px;line-height:1.5;color:${MUTED}">or tap the code to select it</td>
+      </tr></table>`
     : "";
   const facts = c.facts?.length
     ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 22px;border:1px solid ${LINE};border-radius:10px;border-collapse:separate;overflow:hidden">${c.facts
